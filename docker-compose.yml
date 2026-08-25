@@ -1,0 +1,34 @@
+name: quiescent
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: quiescent-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-quiescent}
+      POSTGRES_USER: ${POSTGRES_USER:-quiescent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-quiescent}
+      TZ: UTC
+      PGTZ: UTC
+
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-quiescent} -d ${POSTGRES_DB:-quiescent}",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+volumes:
+  pgdata:
