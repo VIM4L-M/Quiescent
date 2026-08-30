@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math/rand/v2"
 	"time"
 
 	"github.com/VIM4L-M/Quiescent/internal/domain"
@@ -42,7 +43,7 @@ func New(s *store.Store, bank *provider.Client, holder string, log *slog.Logger)
 		Holder:   holder,
 		Log:      log,
 		MaxTries: 5,
-		Backoff:  func(try int) time.Duration { return time.Duration(1<<uint(try)) * time.Second },
+		Backoff:  fullJitterBackoff(1*time.Second, 30*time.Second),
 	}
 }
 
@@ -97,4 +98,14 @@ func (r *Reconciler) Resolve(ctx context.Context, a domain.Attempt) (Result, err
 	r.Log.Info("reconciled: not debited, budget refunded",
 		"attemptID", a.AttemptID, "cycleID", a.CycleID, "failureCode", resp.FailureCode)
 	return ResultPending, nil
+}
+
+func fullJitterBackoff(base, cap time.Duration) func(try int) time.Duration {
+	return func(try int) time.Duration {
+		upper := base << uint(try)
+		if upper <= 0 || upper > cap {
+			upper = cap
+		}
+		return time.Duration(rand.Int64N(int64(upper))) + 1
+	}
 }
