@@ -65,7 +65,7 @@ func (w *Worker) FireOne(ctx context.Context, a domain.Attempt) (Result, error) 
 		return "", err
 	}
 
-	delivered, err := w.Store.NoticeDelivered(ctx, a.AttemptID)
+	delivered, err := w.Store.NoticeDelivered(ctx, a.AttemptID, a.ScheduledFor)
 	if err != nil {
 		return "", err
 	}

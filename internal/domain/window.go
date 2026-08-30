@@ -21,6 +21,8 @@ const (
 	blockedToMinute   = 13 * 60
 )
 
+const NoticeLead = 24 * time.Hour
+
 func Blocked(t time.Time) bool {
 	local := t.In(IST)
 	m := local.Hour()*60 + local.Minute()

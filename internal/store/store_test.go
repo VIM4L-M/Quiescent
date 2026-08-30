@@ -372,7 +372,7 @@ func TestD2NoticeGateFailsClosedWhenNoticeWasNeverQueued(t *testing.T) {
 	c := seedCycle(t, s, ctx)
 	a := seedAttempt(t, s, ctx, c, 2)
 
-	delivered, err := s.NoticeDelivered(ctx, a.AttemptID)
+	delivered, err := s.NoticeDelivered(ctx, a.AttemptID, a.ScheduledFor)
 	if err != nil {
 		t.Fatalf("gate returned an error where it must return false: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestD2NoticeGateOpensOnlyAfterDelivery(t *testing.T) {
 		t.Fatalf("queue notice: %v", err)
 	}
 
-	delivered, err := s.NoticeDelivered(ctx, a.AttemptID)
+	delivered, err := s.NoticeDelivered(ctx, a.AttemptID, a.ScheduledFor)
 	if err != nil {
 		t.Fatalf("gate: %v", err)
 	}
@@ -404,17 +404,18 @@ func TestD2NoticeGateOpensOnlyAfterDelivery(t *testing.T) {
 		t.Fatal("a queued but undelivered notice must not open the gate")
 	}
 
+	deliveredAt := a.ScheduledFor.Add(-25 * time.Hour) // comfortably more than 24h ahead
 	if _, err := s.pool.Exec(ctx,
-		`UPDATE outbox SET delivered_at = now() WHERE attempt_id = $1`, a.AttemptID); err != nil {
+		`UPDATE outbox SET delivered_at = $2 WHERE attempt_id = $1`, a.AttemptID, deliveredAt); err != nil {
 		t.Fatalf("deliver: %v", err)
 	}
 
-	delivered, err = s.NoticeDelivered(ctx, a.AttemptID)
+	delivered, err = s.NoticeDelivered(ctx, a.AttemptID, a.ScheduledFor)
 	if err != nil {
 		t.Fatalf("gate: %v", err)
 	}
 	if !delivered {
-		t.Fatal("a delivered notice must open the gate")
+		t.Fatal("a notice delivered more than 24h ahead of firing must open the gate")
 	}
 
 	entries, err := s.OutboxByAttempt(ctx, a.AttemptID, domain.OutboxPreDebitNotice)
@@ -423,6 +424,38 @@ func TestD2NoticeGateOpensOnlyAfterDelivery(t *testing.T) {
 	}
 	if len(entries) != 1 || !entries[0].Delivered() || entries[0].Kind != domain.OutboxPreDebitNotice {
 		t.Fatalf("outbox round trip: %+v", entries)
+	}
+}
+
+func TestNoticeGateStaysClosedWhenDeliveredLessThan24hAhead(t *testing.T) {
+	s, ctx := testStore(t)
+	c := seedCycle(t, s, ctx)
+	a := seedAttempt(t, s, ctx, c, 2)
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO outbox (cycle_id, attempt_id, kind, payload, deliver_by)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		c.CycleID, a.AttemptID, domain.OutboxPreDebitNotice,
+		json.RawMessage(`{"amountPaise":200000}`),
+		a.ScheduledFor.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("queue notice: %v", err)
+	}
+
+	// delivered only 23 hours before firing — one hour short of the RBI e-mandate
+	// 24h requirement (docs/SOURCES.md, High confidence).
+	tooLate := a.ScheduledFor.Add(-23 * time.Hour)
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE outbox SET delivered_at = $2 WHERE attempt_id = $1`, a.AttemptID, tooLate); err != nil {
+		t.Fatalf("deliver late: %v", err)
+	}
+
+	delivered, err := s.NoticeDelivered(ctx, a.AttemptID, a.ScheduledFor)
+	if err != nil {
+		t.Fatalf("gate: %v", err)
+	}
+	if delivered {
+		t.Fatal("a notice delivered less than 24h ahead of firing must NOT open the gate, even though it was delivered")
 	}
 }
 
@@ -439,7 +472,7 @@ func TestNoticeGateIgnoresOtherKinds(t *testing.T) {
 		t.Fatalf("queue escalation: %v", err)
 	}
 
-	delivered, err := s.NoticeDelivered(ctx, a.AttemptID)
+	delivered, err := s.NoticeDelivered(ctx, a.AttemptID, a.ScheduledFor)
 	if err != nil {
 		t.Fatalf("gate: %v", err)
 	}

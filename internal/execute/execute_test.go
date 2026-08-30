@@ -145,7 +145,7 @@ func TestFireOneRecordsSuccessOrFailureFromBank(t *testing.T) {
 	s, ctx := testStore(t)
 	bank, _ := testBank(t)
 	c := seedCycle(t, s, ctx, 50_000)
-	a := seedAttempt(t, s, ctx, c, time.Now().UTC())
+	a := seedAttempt(t, s, ctx, c, time.Now().UTC().Add(25*time.Hour))
 	deliverNotice(t, s, ctx, c, a)
 
 	w := execute.New(s, bank, "worker-a", nil)
@@ -176,7 +176,7 @@ func TestFireOneRecordsDeterministicOverLimitFailure(t *testing.T) {
 	s, ctx := testStore(t)
 	bank, _ := testBank(t)
 	c := seedCycle(t, s, ctx, 2_000_000) // over the UPI cap of 1,500,000
-	a := seedAttempt(t, s, ctx, c, time.Now().UTC())
+	a := seedAttempt(t, s, ctx, c, time.Now().UTC().Add(25*time.Hour))
 	deliverNotice(t, s, ctx, c, a)
 
 	w := execute.New(s, bank, "worker-a", nil)
@@ -200,7 +200,7 @@ func TestC3FireOneMarksTimeoutWhenBankNeverReplies(t *testing.T) {
 	s, ctx := testStore(t)
 	bank, baseURL := testBank(t)
 	c := seedCycle(t, s, ctx, 50_000)
-	a := seedAttempt(t, s, ctx, c, time.Now().UTC())
+	a := seedAttempt(t, s, ctx, c, time.Now().UTC().Add(25*time.Hour))
 	deliverNotice(t, s, ctx, c, a)
 
 	inject(t, baseURL, provider.InjectRequest{Mode: provider.InjectTimeoutAfterCommit, CycleID: c.CycleID})

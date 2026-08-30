@@ -50,7 +50,7 @@ type ErrorBody struct {
 }
 
 func IdempotencyKey(cycleID domain.CycleID, seq int) string {
-	return string(cycleID) + ":" + strconv.Itoa(seq)
+	return domain.NewIdempotencyKey(cycleID, int16(seq))
 }
 
 func AttemptNumberFromKey(cycleID domain.CycleID, key string) (int, bool) {

@@ -37,18 +37,20 @@ func (s *Store) MarkNoticeDelivered(ctx context.Context, attemptID domain.Attemp
 	return expectOne("store: mark notice delivered", tag, err)
 }
 
-func (s *Store) NoticeDelivered(ctx context.Context, attemptID domain.AttemptID) (bool, error) {
+func (s *Store) NoticeDelivered(ctx context.Context, attemptID domain.AttemptID, scheduledFor time.Time) (bool, error) {
 	if attemptID == "" {
 		return false, fmt.Errorf("%w: attemptID is required", ErrInvalidArgument)
 	}
+	deadline := scheduledFor.Add(-domain.NoticeLead)
 	const q = `
 		SELECT EXISTS (
 			SELECT 1 FROM outbox
 			 WHERE attempt_id = $1
 			   AND kind = $2
-			   AND delivered_at IS NOT NULL)`
+			   AND delivered_at IS NOT NULL
+			   AND delivered_at <= $3)`
 	var delivered bool
-	err := s.q.QueryRow(ctx, q, attemptID, domain.OutboxPreDebitNotice).Scan(&delivered)
+	err := s.q.QueryRow(ctx, q, attemptID, domain.OutboxPreDebitNotice, deadline).Scan(&delivered)
 	if err != nil {
 		return false, mapError("store: notice gate", err)
 	}
