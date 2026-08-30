@@ -57,6 +57,26 @@ func (s *Store) NoticeDelivered(ctx context.Context, attemptID domain.AttemptID,
 	return delivered, nil
 }
 
+func (s *Store) PendingNotices(ctx context.Context, limit int) ([]domain.OutboxEntry, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	const q = `SELECT ` + outboxColumns + `
+		  FROM outbox
+		 WHERE delivered_at IS NULL
+		 ORDER BY deliver_by
+		 LIMIT $1`
+	rows, err := s.q.Query(ctx, q, limit)
+	if err != nil {
+		return nil, mapError("store: pending notices", err)
+	}
+	entries, err := pgx.CollectRows(rows, pgx.RowToStructByName[domain.OutboxEntry])
+	if err != nil {
+		return nil, mapError("store: pending notices", err)
+	}
+	return entries, nil
+}
+
 func (s *Store) OutboxByAttempt(ctx context.Context, attemptID domain.AttemptID,
 	kind domain.OutboxKind) ([]domain.OutboxEntry, error) {
 
