@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/VIM4L-M/Quiescent/internal/domain"
 	"github.com/jackc/pgx/v5"
@@ -10,6 +12,30 @@ import (
 
 const outboxColumns = `id, cycle_id, attempt_id, kind, payload,
 	deliver_by, delivered_at, attempts`
+
+func (s *Store) QueueNotice(ctx context.Context, cycleID domain.CycleID, attemptID domain.AttemptID,
+	kind domain.OutboxKind, payload json.RawMessage, deliverBy time.Time) error {
+
+	if !kind.Valid() {
+		return fmt.Errorf("%w: outbox kind %q", ErrInvalidEnum, kind)
+	}
+	const q = `
+		INSERT INTO outbox (cycle_id, attempt_id, kind, payload, deliver_by)
+		VALUES ($1, $2, $3, $4, $5)`
+	_, err := s.q.Exec(ctx, q, cycleID, attemptID, kind, payload, deliverBy)
+	return mapError("store: queue notice", err)
+}
+
+func (s *Store) MarkNoticeDelivered(ctx context.Context, attemptID domain.AttemptID, kind domain.OutboxKind) error {
+	if !kind.Valid() {
+		return fmt.Errorf("%w: outbox kind %q", ErrInvalidEnum, kind)
+	}
+	const q = `
+		UPDATE outbox SET delivered_at = now()
+		 WHERE attempt_id = $1 AND kind = $2 AND delivered_at IS NULL`
+	tag, err := s.q.Exec(ctx, q, attemptID, kind)
+	return expectOne("store: mark notice delivered", tag, err)
+}
 
 func (s *Store) NoticeDelivered(ctx context.Context, attemptID domain.AttemptID) (bool, error) {
 	if attemptID == "" {
