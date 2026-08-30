@@ -110,6 +110,11 @@ func (w *Worker) FireOne(ctx context.Context, a domain.Attempt) (Result, error) 
 	if err := w.Store.RecordAttemptOutcome(ctx, a.AttemptID, resp.Outcome, code); err != nil {
 		return "", err
 	}
+	if resp.Outcome == domain.OutcomeSuccess {
+		if err := w.Store.MarkCycleRecovered(ctx, a.CycleID); err != nil {
+			return "", err
+		}
+	}
 	w.Log.Info("attempt fired", "attemptID", a.AttemptID, "cycleID", a.CycleID, "outcome", resp.Outcome)
 	return ResultFired, nil
 }
