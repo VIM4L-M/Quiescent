@@ -14,15 +14,21 @@ type Plan struct {
 	Reason       domain.DecisionReason
 }
 
-func First(dueDate time.Time) Plan {
-	candidate, shift := shiftOutOfBlockedWindow(dueDate)
+func First(dueDate time.Time, preferredHour *int) Plan {
+	candidate, hourBasis := applyPreferredHour(dueDate, preferredHour)
+	candidate, shift := shiftOutOfBlockedWindow(candidate)
+
+	basis := "original attempt: no prior failure to learn from"
+	if hourBasis != "" {
+		basis = hourBasis
+	}
 	return Plan{
 		ScheduledFor: candidate,
 		Reason: domain.DecisionReason{
 			Class:           domain.ClassRetryNow,
 			ClassifiedBy:    domain.ClassifiedByTable,
 			PredictedFunds:  "unknown",
-			PredictionBasis: "original attempt: no prior failure to learn from",
+			PredictionBasis: basis,
 			Constraints: domain.ReasonConstraints{
 				BlockedWindowShift: shift,
 				NoticeDeadline:     candidate.Add(-domain.NoticeLead).Format(time.RFC3339),
@@ -34,7 +40,7 @@ func First(dueDate time.Time) Plan {
 	}
 }
 
-func Next(dueDate time.Time, attemptsUsed int16, code domain.FailureCode, class domain.FailureClass) (Plan, bool) {
+func Next(dueDate time.Time, attemptsUsed int16, code domain.FailureCode, class domain.FailureClass, preferredHour *int) (Plan, bool) {
 	if class == domain.ClassTerminal || class == domain.ClassManualReview {
 		return Plan{}, false
 	}
@@ -44,8 +50,13 @@ func Next(dueDate time.Time, attemptsUsed int16, code domain.FailureCode, class 
 		return Plan{}, false
 	}
 
-	candidate, shift := shiftOutOfBlockedWindow(dueDate.Add(offsets[slotIndex]))
+	candidate, hourBasis := applyPreferredHour(dueDate.Add(offsets[slotIndex]), preferredHour)
+	candidate, shift := shiftOutOfBlockedWindow(candidate)
+
 	funds, basis := predict.Horizon(class)
+	if hourBasis != "" {
+		basis = hourBasis
+	}
 
 	return Plan{
 		ScheduledFor: candidate,
@@ -66,13 +77,21 @@ func Next(dueDate time.Time, attemptsUsed int16, code domain.FailureCode, class 
 	}, true
 }
 
-func shiftOutOfBlockedWindow(t time.Time) (time.Time, string) {
-	if !domain.Blocked(t) {
-		return t, "none"
+func applyPreferredHour(t time.Time, preferredHour *int) (time.Time, string) {
+	if preferredHour == nil {
+		return t, ""
 	}
 	local := t.In(domain.IST)
-	shifted := time.Date(local.Year(), local.Month(), local.Day(), 13, 5, 0, 0, domain.IST)
-	return shifted, "shifted past the 10:00-13:00 IST blocked window"
+	adjusted := time.Date(local.Year(), local.Month(), local.Day(), *preferredHour, 0, 0, 0, domain.IST)
+	return adjusted, "shifted to this customer's historically best hour on the same mandated day"
+}
+
+func shiftOutOfBlockedWindow(t time.Time) (time.Time, string) {
+	label := domain.WindowLabel(t)
+	if label == "" {
+		return t, "none"
+	}
+	return domain.ShiftPastBlockedWindow(t), "shifted past the " + label + " IST blocked window"
 }
 
 func slotName(i int) string {

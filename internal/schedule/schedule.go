@@ -9,9 +9,12 @@ import (
 
 	"github.com/VIM4L-M/Quiescent/internal/classify"
 	"github.com/VIM4L-M/Quiescent/internal/domain"
+	"github.com/VIM4L-M/Quiescent/internal/predict"
 	"github.com/VIM4L-M/Quiescent/internal/solve"
 	"github.com/VIM4L-M/Quiescent/internal/store"
 )
+
+const historyLimit = 20
 
 type Result string
 
@@ -40,13 +43,21 @@ type notice struct {
 }
 
 func (s *Scheduler) ScheduleNext(ctx context.Context, cycle domain.MandateCycle, lastFailureCode domain.FailureCode) (Result, error) {
+	history, err := s.Store.CustomerSuccessHistory(ctx, cycle.CustomerID, historyLimit)
+	if err != nil {
+		return "", err
+	}
+	preferredHour, hourBasis := predict.PreferredHour(history)
+	s.Log.Info("history-derived hour preference",
+		"cycleID", cycle.CycleID, "customerID", cycle.CustomerID, "basis", hourBasis)
+
 	var plan solve.Plan
 	if cycle.AttemptsUsed == 0 {
-		plan = solve.First(cycle.DueDate)
+		plan = solve.First(cycle.DueDate, preferredHour)
 	} else {
 		class, _ := classify.Classify(lastFailureCode)
 		var ok bool
-		plan, ok = solve.Next(cycle.DueDate, cycle.AttemptsUsed, lastFailureCode, class)
+		plan, ok = solve.Next(cycle.DueDate, cycle.AttemptsUsed, lastFailureCode, class, preferredHour)
 		if !ok {
 			s.Log.Info("cycle not retryable", "cycleID", cycle.CycleID, "failureCode", lastFailureCode)
 			return ResultNotRetryable, nil

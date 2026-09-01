@@ -307,8 +307,8 @@ func TestOracleIsNotOnThePublicMux(t *testing.T) {
 			}
 		}
 	}
-	if blocked != 4 {
-		t.Fatalf("expected 4 blocked hourly slots, got %d", blocked)
+	if blocked != 9 {
+		t.Fatalf("expected 9 blocked hourly slots (10,11,12,13 and 17,18,19,20,21 IST), got %d", blocked)
 	}
 }
 
