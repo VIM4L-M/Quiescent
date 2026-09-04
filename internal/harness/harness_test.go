@@ -32,8 +32,8 @@ func TestSimulationsAreDeterministicUnderTheSameSeed(t *testing.T) {
 	w2 := provider.NewWorld(seed)
 
 	for _, c := range cycles {
-		a := harness.SimulateSystem(w1, seed, c)
-		b := harness.SimulateSystem(w2, seed, c)
+		a := harness.SimulateSystem(w1, seed, c, nil)
+		b := harness.SimulateSystem(w2, seed, c, nil)
 		if a != b {
 			t.Fatalf("cycle %s: same seed produced different outcomes: %+v vs %+v", c.CycleID, a, b)
 		}
@@ -46,7 +46,7 @@ func TestOracleNeverRecoversFewerCyclesThanSystem(t *testing.T) {
 	w := provider.NewWorld(seed)
 
 	for _, c := range cycles {
-		sys := harness.SimulateSystem(w, seed, c)
+		sys := harness.SimulateSystem(w, seed, c, nil)
 		oracle := harness.SimulateOracle(w, seed, c)
 		if sys.Recovered && !oracle.Recovered {
 			t.Fatalf("cycle %s: system recovered but the oracle — which always fires at the single best "+

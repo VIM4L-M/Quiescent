@@ -212,6 +212,33 @@ func TestProcessOneRetriesOnSendFailureWithoutAbandoning(t *testing.T) {
 	}
 }
 
+func TestPendingNoticesExcludesAlreadyAbandonedEntries(t *testing.T) {
+	s, ctx := testStore(t)
+	c := seedCycle(t, s, ctx)
+	scheduledFor := time.Now().UTC().Add(1 * time.Hour)
+	deliverBy := time.Now().UTC().Add(-1 * time.Minute) // deadline already passed
+	_, entry := seedAttemptWithNotice(t, s, ctx, c, scheduledFor, deliverBy)
+
+	sender := &spySender{}
+	r := outbox.New(s, sender, nil)
+	if result, err := r.ProcessOne(ctx, entry); err != nil {
+		t.Fatalf("first process: %v", err)
+	} else if result != outbox.ResultTooLate {
+		t.Fatalf("first process result: got %v want %v", result, outbox.ResultTooLate)
+	}
+
+	pending, err := s.PendingNotices(ctx, 50)
+	if err != nil {
+		t.Fatalf("pending notices: %v", err)
+	}
+	for _, p := range pending {
+		if p.ID == entry.ID {
+			t.Fatal("a too-late notice must stop showing up as pending once its attempt is abandoned — " +
+				"otherwise the relay re-processes and re-logs it on every tick, forever")
+		}
+	}
+}
+
 func TestProcessBatchHandlesMultiplePending(t *testing.T) {
 	s, ctx := testStore(t)
 	c1 := seedCycle(t, s, ctx)

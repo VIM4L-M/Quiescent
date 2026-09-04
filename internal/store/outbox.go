@@ -61,10 +61,13 @@ func (s *Store) PendingNotices(ctx context.Context, limit int) ([]domain.OutboxE
 	if limit <= 0 {
 		limit = 50
 	}
-	const q = `SELECT ` + outboxColumns + `
-		  FROM outbox
-		 WHERE delivered_at IS NULL
-		 ORDER BY deliver_by
+	const q = `
+		SELECT o.id, o.cycle_id, o.attempt_id, o.kind, o.payload, o.deliver_by, o.delivered_at, o.attempts
+		  FROM outbox o
+		  JOIN attempts a ON a.attempt_id = o.attempt_id
+		 WHERE o.delivered_at IS NULL
+		   AND a.outcome IS NULL
+		 ORDER BY o.deliver_by
 		 LIMIT $1`
 	rows, err := s.q.Query(ctx, q, limit)
 	if err != nil {

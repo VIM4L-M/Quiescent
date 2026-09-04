@@ -5,6 +5,7 @@ import (
 
 	"github.com/VIM4L-M/Quiescent/internal/classify"
 	"github.com/VIM4L-M/Quiescent/internal/domain"
+	"github.com/VIM4L-M/Quiescent/internal/predict"
 	"github.com/VIM4L-M/Quiescent/internal/provider"
 	"github.com/VIM4L-M/Quiescent/internal/solve"
 )
@@ -20,6 +21,7 @@ type CycleSpec struct {
 type Outcome struct {
 	Recovered    bool
 	AttemptsUsed int
+	FiredAt      time.Time
 }
 
 func decide(w *provider.World, seed int64, c CycleSpec, attemptNumber int, firedAt time.Time) provider.Decision {
@@ -34,17 +36,18 @@ func decide(w *provider.World, seed int64, c CycleSpec, attemptNumber int, fired
 	})
 }
 
-func SimulateSystem(w *provider.World, seed int64, c CycleSpec) Outcome {
+func SimulateSystem(w *provider.World, seed int64, c CycleSpec, history []time.Time) Outcome {
 	var attemptsUsed int16
 	var lastCode domain.FailureCode
+	preferredHour, _ := predict.PreferredHour(history)
 
 	for attemptsUsed < int16(domain.MaxAttempts) {
 		var plan solve.Plan
 		if attemptsUsed == 0 {
-			plan = solve.First(c.DueDate, nil)
+			plan = solve.First(c.DueDate, preferredHour)
 		} else {
 			class, _ := classify.Classify(lastCode)
-			p, ok := solve.Next(c.DueDate, attemptsUsed, lastCode, class, nil)
+			p, ok := solve.Next(c.DueDate, attemptsUsed, lastCode, class, preferredHour)
 			if !ok {
 				return Outcome{Recovered: false, AttemptsUsed: int(attemptsUsed)}
 			}
@@ -53,11 +56,24 @@ func SimulateSystem(w *provider.World, seed int64, c CycleSpec) Outcome {
 		attemptsUsed++
 		result := decide(w, seed, c, int(attemptsUsed), plan.ScheduledFor)
 		if result.Outcome == domain.OutcomeSuccess {
-			return Outcome{Recovered: true, AttemptsUsed: int(attemptsUsed)}
+			return Outcome{Recovered: true, AttemptsUsed: int(attemptsUsed), FiredAt: plan.ScheduledFor}
 		}
 		lastCode = result.FailureCode
 	}
 	return Outcome{Recovered: false, AttemptsUsed: int(attemptsUsed)}
+}
+
+func SimulateCustomerSequence(w *provider.World, seed int64, sequence []CycleSpec) []Outcome {
+	outcomes := make([]Outcome, len(sequence))
+	var history []time.Time
+	for i, c := range sequence {
+		outcome := SimulateSystem(w, seed, c, history)
+		outcomes[i] = outcome
+		if outcome.Recovered {
+			history = append(history, outcome.FiredAt)
+		}
+	}
+	return outcomes
 }
 
 func SimulateBaseline(w *provider.World, seed int64, c CycleSpec) Outcome {

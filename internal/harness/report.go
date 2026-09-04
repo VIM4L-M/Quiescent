@@ -14,18 +14,24 @@ type BatchResult struct {
 	OracleRecovered   int
 }
 
-func RunBatch(seed int64, cycles []CycleSpec) BatchResult {
+func RunBatch(seed int64, customers int) BatchResult {
 	w := provider.NewWorld(seed)
-	res := BatchResult{Seed: seed, Total: len(cycles)}
-	for _, c := range cycles {
-		if SimulateSystem(w, seed, c).Recovered {
-			res.SystemRecovered++
+	sequences := GenerateCustomerSequences(seed, customers)
+	res := BatchResult{Seed: seed}
+	for _, seq := range sequences {
+		for _, outcome := range SimulateCustomerSequence(w, seed, seq) {
+			res.Total++
+			if outcome.Recovered {
+				res.SystemRecovered++
+			}
 		}
-		if SimulateBaseline(w, seed, c).Recovered {
-			res.BaselineRecovered++
-		}
-		if SimulateOracle(w, seed, c).Recovered {
-			res.OracleRecovered++
+		for _, c := range seq {
+			if SimulateBaseline(w, seed, c).Recovered {
+				res.BaselineRecovered++
+			}
+			if SimulateOracle(w, seed, c).Recovered {
+				res.OracleRecovered++
+			}
 		}
 	}
 	return res
@@ -46,10 +52,10 @@ type Report struct {
 	CapturedLiftCI95 float64 // +/- half-width, paired across seeds
 }
 
-func RunMany(seeds []int64, cyclesPerSeed int) Report {
+func RunMany(seeds []int64, customersPerSeed int) Report {
 	batches := make([]BatchResult, len(seeds))
 	for i, seed := range seeds {
-		batches[i] = RunBatch(seed, GenerateCycles(seed, cyclesPerSeed))
+		batches[i] = RunBatch(seed, customersPerSeed)
 	}
 	return aggregate(batches)
 }
