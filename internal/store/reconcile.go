@@ -21,6 +21,24 @@ func (s *Store) HoldCycle(ctx context.Context, cycleID domain.CycleID) error {
 	return expectOne("store: hold cycle", tag, err)
 }
 
+func (s *Store) ReturnCycleToPending(ctx context.Context, cycleID domain.CycleID) error {
+	const q = `UPDATE mandate_cycles SET state = 'pending' WHERE cycle_id = $1`
+	tag, err := s.q.Exec(ctx, q, cycleID)
+	return expectOne("store: return cycle to pending", tag, err)
+}
+
+func (s *Store) EscalateCycle(ctx context.Context, cycleID domain.CycleID) error {
+	const q = `UPDATE mandate_cycles SET state = 'escalated' WHERE cycle_id = $1`
+	tag, err := s.q.Exec(ctx, q, cycleID)
+	return expectOne("store: escalate cycle", tag, err)
+}
+
+func (s *Store) AbandonCycle(ctx context.Context, cycleID domain.CycleID) error {
+	const q = `UPDATE mandate_cycles SET state = 'abandoned' WHERE cycle_id = $1`
+	tag, err := s.q.Exec(ctx, q, cycleID)
+	return expectOne("store: abandon cycle", tag, err)
+}
+
 func (s *Store) ResolveDebited(ctx context.Context, attemptID domain.AttemptID) error {
 	if attemptID == "" {
 		return fmt.Errorf("%w: attemptID is required", ErrInvalidArgument)

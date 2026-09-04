@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/VIM4L-M/Quiescent/internal/classify"
 	"github.com/VIM4L-M/Quiescent/internal/domain"
 	"github.com/VIM4L-M/Quiescent/internal/lease"
 	"github.com/VIM4L-M/Quiescent/internal/provider"
@@ -110,11 +111,27 @@ func (w *Worker) FireOne(ctx context.Context, a domain.Attempt) (Result, error) 
 	if err := w.Store.RecordAttemptOutcome(ctx, a.AttemptID, resp.Outcome, code); err != nil {
 		return "", err
 	}
-	if resp.Outcome == domain.OutcomeSuccess {
-		if err := w.Store.MarkCycleRecovered(ctx, a.CycleID); err != nil {
-			return "", err
-		}
+	if err := w.advanceCycle(ctx, a, cycle, resp); err != nil {
+		return "", err
 	}
 	w.Log.Info("attempt fired", "attemptID", a.AttemptID, "cycleID", a.CycleID, "outcome", resp.Outcome)
 	return ResultFired, nil
+}
+
+func (w *Worker) advanceCycle(ctx context.Context, a domain.Attempt, cycle domain.MandateCycle, resp provider.DebitResponse) error {
+	if resp.Outcome == domain.OutcomeSuccess {
+		return w.Store.MarkCycleRecovered(ctx, a.CycleID)
+	}
+	if resp.Outcome != domain.OutcomeFailure {
+		return nil
+	}
+	class, _ := classify.Classify(resp.FailureCode)
+	switch {
+	case class == domain.ClassTerminal || class == domain.ClassManualReview:
+		return w.Store.EscalateCycle(ctx, a.CycleID)
+	case cycle.AttemptsUsed >= int16(domain.MaxAttempts):
+		return w.Store.AbandonCycle(ctx, a.CycleID)
+	default:
+		return w.Store.ReturnCycleToPending(ctx, a.CycleID)
+	}
 }

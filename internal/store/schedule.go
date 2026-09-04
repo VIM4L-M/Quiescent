@@ -20,7 +20,7 @@ func (s *Store) ReserveAttempt(ctx context.Context, cycleID domain.CycleID, expe
 	return s.Tx(ctx, func(tx *Store) error {
 		const reserveQ = `
 			UPDATE mandate_cycles
-			   SET attempts_used = attempts_used + 1, version = version + 1
+			   SET attempts_used = attempts_used + 1, version = version + 1, state = 'scheduled'
 			 WHERE cycle_id = $1 AND version = $2 AND attempts_used < $3
 			RETURNING attempts_used`
 		var used int16

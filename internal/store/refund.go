@@ -31,7 +31,7 @@ func (s *Store) AbandonAttempt(ctx context.Context, attemptID domain.AttemptID) 
 		}
 		const refundQ = `
 			UPDATE mandate_cycles
-			   SET attempts_used = attempts_used - 1
+			   SET attempts_used = attempts_used - 1, state = 'pending'
 			 WHERE cycle_id = $1 AND attempts_used > 0`
 		tag, err := tx.q.Exec(ctx, refundQ, cycleID)
 		return expectOne("store: abandon attempt refund", tag, err)

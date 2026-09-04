@@ -37,6 +37,31 @@ func (s *Store) Cycle(ctx context.Context, cycleID domain.CycleID) (domain.Manda
 	return c, nil
 }
 
+func (s *Store) SchedulableCycles(ctx context.Context, limit int) ([]domain.MandateCycle, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	const q = `SELECT ` + cycleColumns + `
+		  FROM mandate_cycles c
+		 WHERE c.state = 'pending'
+		   AND NOT EXISTS (
+		     SELECT 1 FROM attempts a
+		      WHERE a.cycle_id = c.cycle_id
+		        AND (a.outcome IS NULL OR a.outcome = 'TIMEOUT')
+		   )
+		 ORDER BY c.due_date, c.cycle_id
+		 LIMIT $1`
+	rows, err := s.q.Query(ctx, q, limit)
+	if err != nil {
+		return nil, mapError("store: schedulable cycles", err)
+	}
+	cycles, err := pgx.CollectRows(rows, pgx.RowToStructByName[domain.MandateCycle])
+	if err != nil {
+		return nil, mapError("store: schedulable cycles", err)
+	}
+	return cycles, nil
+}
+
 func (s *Store) CyclesByState(ctx context.Context, state domain.State, limit int) ([]domain.MandateCycle, error) {
 	if !state.Valid() {
 		return nil, mapError("store: cycles by state", ErrInvalidEnum)

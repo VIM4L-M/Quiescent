@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/VIM4L-M/Quiescent/internal/domain"
@@ -31,13 +32,25 @@ func (s *Store) MarkAttemptFired(ctx context.Context, attemptID domain.AttemptID
 	if fence <= 0 {
 		return fmt.Errorf("%w: fence must be positive", ErrInvalidArgument)
 	}
-	const q = `
-		UPDATE attempts
-		   SET fired_at = now(), fence = $2
-		 WHERE attempt_id = $1
-		   AND fired_at IS NULL`
-	tag, err := s.q.Exec(ctx, q, attemptID, int64(fence))
-	return expectOne("store: mark attempt fired", tag, err)
+	return s.Tx(ctx, func(tx *Store) error {
+		const markQ = `
+			UPDATE attempts
+			   SET fired_at = now(), fence = $2
+			 WHERE attempt_id = $1
+			   AND fired_at IS NULL
+			RETURNING cycle_id`
+		var cycleID domain.CycleID
+		err := tx.q.QueryRow(ctx, markQ, attemptID, int64(fence)).Scan(&cycleID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("store: mark attempt fired: %w", ErrConflict)
+			}
+			return mapError("store: mark attempt fired", err)
+		}
+		const stateQ = `UPDATE mandate_cycles SET state = 'in_flight' WHERE cycle_id = $1`
+		tag, err := tx.q.Exec(ctx, stateQ, cycleID)
+		return expectOne("store: mark attempt fired state", tag, err)
+	})
 }
 
 func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID domain.AttemptID,
@@ -49,15 +62,30 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID domain.Attem
 	if err := validateOutcome(outcome, failureCode); err != nil {
 		return err
 	}
-	const q = `
-		UPDATE attempts
-		   SET outcome = $2, failure_code = $3
-		 WHERE attempt_id = $1
-		   AND outcome IS NULL
-		   AND (($2::text =  'ABANDONED_STALE' AND fired_at IS     NULL)
-		     OR ($2::text <> 'ABANDONED_STALE' AND fired_at IS NOT NULL))`
-	tag, err := s.q.Exec(ctx, q, attemptID, outcome, failureCode)
-	return expectOne("store: record attempt outcome", tag, err)
+	return s.Tx(ctx, func(tx *Store) error {
+		const q = `
+			UPDATE attempts
+			   SET outcome = $2, failure_code = $3
+			 WHERE attempt_id = $1
+			   AND outcome IS NULL
+			   AND (($2::text =  'ABANDONED_STALE' AND fired_at IS     NULL)
+			     OR ($2::text <> 'ABANDONED_STALE' AND fired_at IS NOT NULL))
+			RETURNING cycle_id`
+		var cycleID domain.CycleID
+		err := tx.q.QueryRow(ctx, q, attemptID, outcome, failureCode).Scan(&cycleID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("store: record attempt outcome: %w", ErrConflict)
+			}
+			return mapError("store: record attempt outcome", err)
+		}
+		if outcome != domain.OutcomeTimeout {
+			return nil
+		}
+		const stateQ = `UPDATE mandate_cycles SET state = 'unknown' WHERE cycle_id = $1`
+		tag, err := tx.q.Exec(ctx, stateQ, cycleID)
+		return expectOne("store: record attempt outcome state", tag, err)
+	})
 }
 
 func (s *Store) ResolveAttemptOutcome(ctx context.Context, attemptID domain.AttemptID,
