@@ -39,6 +39,26 @@ func (s *Store) AbandonCycle(ctx context.Context, cycleID domain.CycleID) error 
 	return expectOne("store: abandon cycle", tag, err)
 }
 
+func (s *Store) NeedsReconciliation(ctx context.Context, limit int) ([]domain.Attempt, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	const q = `SELECT ` + attemptColumns + `
+		  FROM attempts
+		 WHERE outcome = 'TIMEOUT'
+		 ORDER BY scheduled_for
+		 LIMIT $1`
+	rows, err := s.q.Query(ctx, q, limit)
+	if err != nil {
+		return nil, mapError("store: needs reconciliation", err)
+	}
+	attempts, err := pgx.CollectRows(rows, pgx.RowToStructByName[domain.Attempt])
+	if err != nil {
+		return nil, mapError("store: needs reconciliation", err)
+	}
+	return attempts, nil
+}
+
 func (s *Store) ResolveDebited(ctx context.Context, attemptID domain.AttemptID) error {
 	if attemptID == "" {
 		return fmt.Errorf("%w: attemptID is required", ErrInvalidArgument)
