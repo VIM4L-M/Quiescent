@@ -204,7 +204,7 @@ func TestTimeoutBeforeCommitLeavesNoRecord(t *testing.T) {
 func TestBlockedWindowDeclines(t *testing.T) {
 	s, srv := newSim(t, 42, filepath.Join(t.TempDir(), "ledger.jsonl"))
 	c := NewClient(srv.URL, 2*time.Second)
-	s.now = func() time.Time { return at(t, "2026-03-08T11:00:00+05:30") }
+	s.Now = func() time.Time { return at(t, "2026-03-08T11:00:00+05:30") }
 
 	resp, err := debit(t, c, request(testCycle, 1, 1, 1_000))
 	if err != nil {
@@ -218,7 +218,7 @@ func TestBlockedWindowDeclines(t *testing.T) {
 func TestENACHBounceChargeOnInsufficientFunds(t *testing.T) {
 	s, srv := newSim(t, 42, filepath.Join(t.TempDir(), "ledger.jsonl"))
 	c := NewClient(srv.URL, 2*time.Second)
-	s.now = func() time.Time { return at(t, "2026-03-08T09:00:00+05:30") }
+	s.Now = func() time.Time { return at(t, "2026-03-08T09:00:00+05:30") }
 	s.world.Apply(Fixture{
 		Customers: []Customer{{CustomerID: "poor", Timeline: []BalancePoint{
 			{From: at(t, "2026-01-01T00:00:00+05:30"), BalancePaise: 34_000},
@@ -252,7 +252,7 @@ func TestRevokeMandateSurvivesRestart(t *testing.T) {
 		t.Fatal("restarted sim forgot a revoked mandate")
 	}
 	c := NewClient(srv2.URL, 2*time.Second)
-	restarted.now = func() time.Time { return at(t, "2026-03-08T09:00:00+05:30") }
+	restarted.Now = func() time.Time { return at(t, "2026-03-08T09:00:00+05:30") }
 	resp, err := debit(t, c, request(testCycle, 1, 1, 1_000))
 	if err != nil {
 		t.Fatalf("debit: %v", err)

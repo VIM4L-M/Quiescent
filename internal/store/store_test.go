@@ -565,3 +565,41 @@ func TestCyclesByStateAndNotFound(t *testing.T) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
+
+func TestC4RawFenceReadWouldCollideIfEverExposed(t *testing.T) {
+	s, ctx := testStore(t)
+	c := seedCycle(t, s, ctx)
+
+	stalledFence, err := s.AcquireLease(ctx, c.CycleID, "worker-a", 1*time.Millisecond)
+	if err != nil {
+		t.Fatalf("stalled worker's acquire: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	freshFence, err := s.AcquireLease(ctx, c.CycleID, "worker-b", 30*time.Second)
+	if err != nil {
+		t.Fatalf("fresh worker's acquire: %v", err)
+	}
+	if freshFence <= stalledFence {
+		t.Fatalf("fence did not advance: stalled=%d fresh=%d", stalledFence, freshFence)
+	}
+
+	var rawFence int64
+	if err := s.pool.QueryRow(ctx, `SELECT fence FROM leases WHERE cycle_id = $1`, c.CycleID).Scan(&rawFence); err != nil {
+		t.Fatalf("raw fence read: %v", err)
+	}
+	if rawFence != int64(freshFence) {
+		t.Fatalf("raw read: got %d want %d", rawFence, freshFence)
+	}
+	if domain.Fence(rawFence) == stalledFence {
+		t.Fatal("a raw, unguarded fence read must never equal what a stalled worker holds")
+	}
+
+	t.Logf("C4: worker A's captured fence stays %d after it stalls. "+
+		"A raw read of the leases table right now returns %d — worker B's fence, not A's. "+
+		"If A used this raw value instead of the %d it captured at acquisition, "+
+		"its debit would carry B's fence and the provider could not tell them apart. "+
+		"No exported function performs this raw read — the only way to learn a fence "+
+		"is through AcquireLease's guarded RETURNING, which requires actually winning the lease.",
+		stalledFence, rawFence, stalledFence)
+}

@@ -24,7 +24,7 @@ type Sim struct {
 	ledger *Ledger
 	world  *World
 	faults *Faults
-	now    func() time.Time
+	Now    func() time.Time
 }
 
 func New(cfg Config, log *slog.Logger) (*Sim, error) {
@@ -50,7 +50,7 @@ func New(cfg Config, log *slog.Logger) (*Sim, error) {
 		ledger: ledger,
 		world:  world,
 		faults: NewFaults(),
-		now:    func() time.Time { return time.Now().UTC() },
+		Now:    func() time.Time { return time.Now().UTC() },
 	}, nil
 }
 
@@ -172,7 +172,7 @@ func (s *Sim) handleDebit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	firedAt := s.now()
+	firedAt := s.Now()
 	decision := Decide(Conditions{
 		Seed:           s.cfg.Seed,
 		CycleID:        req.CycleID,

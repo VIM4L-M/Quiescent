@@ -104,7 +104,7 @@ func (s *Sim) Probabilities(q OracleQuery) OracleResponse {
 		from = cycle.DueDate
 	}
 	if from.IsZero() {
-		from = s.now()
+		from = s.Now()
 	}
 	revoked := s.ledger.Revoked(q.CycleID)
 	maxAttempts := int(domain.MaxAttempts)

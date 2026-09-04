@@ -55,6 +55,7 @@ func testBank(t *testing.T) (*provider.Client, string) {
 	if err != nil {
 		t.Fatalf("provider.New: %v", err)
 	}
+	sim.Now = func() time.Time { return time.Date(2026, 3, 5, 8, 0, 0, 0, time.UTC) }
 	srv := httptest.NewServer(sim.Handler())
 	t.Cleanup(func() {
 		srv.Close()
