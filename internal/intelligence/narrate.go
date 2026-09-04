@@ -36,7 +36,11 @@ func (c *Client) Narrate(ctx context.Context, attempts []domain.Attempt) (string
 	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	text, err := c.call(callCtx, attempts)
+	text, err := c.chatCompletion(callCtx, chatRequest{
+		Model:               c.model,
+		Messages:            []chatMessage{{Role: "user", Content: buildPrompt(attempts)}},
+		MaxCompletionTokens: 500,
+	})
 	if err != nil {
 		c.breaker.recordFailure()
 		return fallbackNarrative(attempts), nil
@@ -51,9 +55,21 @@ type chatMessage struct {
 }
 
 type chatRequest struct {
-	Model               string        `json:"model"`
-	Messages            []chatMessage `json:"messages"`
-	MaxCompletionTokens int           `json:"max_completion_tokens"`
+	Model               string          `json:"model"`
+	Messages            []chatMessage   `json:"messages"`
+	MaxCompletionTokens int             `json:"max_completion_tokens"`
+	ResponseFormat      *responseFormat `json:"response_format,omitempty"`
+}
+
+type responseFormat struct {
+	Type       string         `json:"type"`
+	JSONSchema jsonSchemaSpec `json:"json_schema"`
+}
+
+type jsonSchemaSpec struct {
+	Name   string         `json:"name"`
+	Strict bool           `json:"strict"`
+	Schema map[string]any `json:"schema"`
 }
 
 type chatResponse struct {
@@ -65,12 +81,8 @@ type chatResponse struct {
 	} `json:"error"`
 }
 
-func (c *Client) call(ctx context.Context, attempts []domain.Attempt) (string, error) {
-	body, err := json.Marshal(chatRequest{
-		Model:               c.model,
-		Messages:            []chatMessage{{Role: "user", Content: buildPrompt(attempts)}},
-		MaxCompletionTokens: 500,
-	})
+func (c *Client) chatCompletion(ctx context.Context, chatReq chatRequest) (string, error) {
+	body, err := json.Marshal(chatReq)
 	if err != nil {
 		return "", err
 	}

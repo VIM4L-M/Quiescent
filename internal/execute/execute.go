@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	leaseTTL   = 30 * time.Second
-	staleAfter = 10 * time.Minute
+	leaseTTL              = 30 * time.Second
+	staleAfter            = 10 * time.Minute
+	aiConfidenceThreshold = 0.7
 )
 
 type Result string
@@ -29,11 +30,12 @@ const (
 )
 
 type Worker struct {
-	Store  *store.Store
-	Bank   *provider.Client
-	Holder string
-	Log    *slog.Logger
-	Now    func() time.Time
+	Store      *store.Store
+	Bank       *provider.Client
+	Holder     string
+	Log        *slog.Logger
+	Now        func() time.Time
+	Classifier domain.Classifier
 }
 
 func New(s *store.Store, bank *provider.Client, holder string, log *slog.Logger) *Worker {
@@ -160,7 +162,7 @@ func (w *Worker) advanceCycle(ctx context.Context, a domain.Attempt, cycle domai
 	if resp.Outcome != domain.OutcomeFailure {
 		return nil
 	}
-	class, _ := classify.Classify(resp.FailureCode)
+	class := w.classify(ctx, cycle, resp.FailureCode)
 	switch {
 	case class == domain.ClassTerminal || class == domain.ClassManualReview:
 		return w.Store.EscalateCycle(ctx, a.CycleID)
@@ -169,4 +171,45 @@ func (w *Worker) advanceCycle(ctx context.Context, a domain.Attempt, cycle domai
 	default:
 		return w.Store.ReturnCycleToPending(ctx, a.CycleID)
 	}
+}
+
+func (w *Worker) classify(ctx context.Context, cycle domain.MandateCycle, code domain.FailureCode) domain.FailureClass {
+	class, ok := classify.Classify(code)
+	if ok || w.Classifier == nil {
+		return class
+	}
+
+	priorAttempts, err := w.Store.AttemptsByCycle(ctx, cycle.CycleID)
+	if err != nil {
+		w.Log.Error("classify: load prior attempts", "cycleID", cycle.CycleID, "error", err)
+		return domain.ClassManualReview
+	}
+	var priorCodes []domain.FailureCode
+	var priorOutcomes []domain.Outcome
+	for _, pa := range priorAttempts {
+		if pa.FailureCode != nil {
+			priorCodes = append(priorCodes, *pa.FailureCode)
+		}
+		if pa.Outcome != nil {
+			priorOutcomes = append(priorOutcomes, *pa.Outcome)
+		}
+	}
+
+	proposal, err := w.Classifier.Propose(ctx, code, domain.ClassificationContext{
+		Rail:          cycle.Rail,
+		AmountPaise:   cycle.AmountPaise,
+		AttemptsUsed:  cycle.AttemptsUsed,
+		PriorCodes:    priorCodes,
+		PriorOutcomes: priorOutcomes,
+	})
+	if err != nil {
+		w.Log.Error("classify: AI propose failed", "failureCode", code, "error", err)
+		return domain.ClassManualReview
+	}
+	w.Log.Info("classify: AI proposed a class for an unmapped code",
+		"failureCode", code, "class", proposal.Class, "confidence", proposal.Confidence, "rationale", proposal.Rationale)
+	if proposal.Confidence < aiConfidenceThreshold {
+		return domain.ClassManualReview
+	}
+	return proposal.Class
 }

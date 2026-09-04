@@ -144,6 +144,7 @@ func runWorker(ctx context.Context, log *slog.Logger) error {
 	batch := envInt("WORKER_BATCH", 20)
 
 	worker := execute.New(s, bank, holder, log)
+	worker.Classifier = intelligence.New(os.Getenv("GROQ_API_KEY"), envString("INTELLIGENCE_MODEL", "openai/gpt-oss-120b"))
 	reconciler := reconcile.New(s, bank, holder, log)
 	relay := outbox.New(s, outbox.LogSender{Log: log}, log)
 
