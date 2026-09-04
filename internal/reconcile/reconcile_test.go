@@ -236,6 +236,17 @@ func TestResolveReturnsToPendingWhenNotDebited(t *testing.T) {
 	if cycle.AttemptsUsed != c.AttemptsUsed-1 {
 		t.Fatalf("attemptsUsed: got %d want %d (budget must be refunded)", cycle.AttemptsUsed, c.AttemptsUsed-1)
 	}
+
+	entries, err := s.AuditByCycle(ctx, c.CycleID)
+	if err != nil {
+		t.Fatalf("audit by cycle: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one audit entry, got %d", len(entries))
+	}
+	if entries[0].Event != "attempt_reconciled" {
+		t.Fatalf("event: got %q want %q", entries[0].Event, "attempt_reconciled")
+	}
 }
 
 func TestC6ResolveHoldsWhenStillUnknownAfterRetries(t *testing.T) {

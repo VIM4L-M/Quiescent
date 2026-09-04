@@ -171,6 +171,20 @@ func TestFireOneRecordsSuccessOrFailureFromBank(t *testing.T) {
 	if *got.Outcome == domain.OutcomeFailure && got.FailureCode == nil {
 		t.Fatal("FAILURE outcome must carry a failure code")
 	}
+
+	entries, err := s.AuditByCycle(ctx, c.CycleID)
+	if err != nil {
+		t.Fatalf("audit by cycle: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one audit entry, got %d", len(entries))
+	}
+	if entries[0].Event != "attempt_fired" {
+		t.Fatalf("event: got %q want %q", entries[0].Event, "attempt_fired")
+	}
+	if string(entries[0].CorrelationID) != string(a.AttemptID) {
+		t.Fatalf("correlationID: got %q want the attemptID %q", entries[0].CorrelationID, a.AttemptID)
+	}
 }
 
 func TestFireOneRecordsDeterministicOverLimitFailure(t *testing.T) {

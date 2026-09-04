@@ -2,6 +2,7 @@ package execute
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
@@ -101,6 +102,7 @@ func (w *Worker) FireOne(ctx context.Context, a domain.Attempt) (Result, error) 
 		if rerr := w.Store.RecordAttemptOutcome(ctx, a.AttemptID, domain.OutcomeTimeout, nil); rerr != nil {
 			return "", rerr
 		}
+		w.appendAudit(ctx, a, domain.OutcomeTimeout, nil, handle.Fence)
 		return ResultFired, nil
 	}
 
@@ -114,8 +116,41 @@ func (w *Worker) FireOne(ctx context.Context, a domain.Attempt) (Result, error) 
 	if err := w.advanceCycle(ctx, a, cycle, resp); err != nil {
 		return "", err
 	}
+	w.appendAudit(ctx, a, resp.Outcome, code, handle.Fence)
 	w.Log.Info("attempt fired", "attemptID", a.AttemptID, "cycleID", a.CycleID, "outcome", resp.Outcome)
 	return ResultFired, nil
+}
+
+func (w *Worker) appendAudit(ctx context.Context, a domain.Attempt, outcome domain.Outcome,
+	code *domain.FailureCode, fence domain.Fence) {
+
+	inputs, err := json.Marshal(map[string]any{
+		"scheduledFor": a.ScheduledFor,
+		"fence":        fence,
+	})
+	if err != nil {
+		w.Log.Error("audit: marshal inputs", "attemptID", a.AttemptID, "error", err)
+		return
+	}
+	decision, err := json.Marshal(map[string]any{
+		"outcome":     outcome,
+		"failureCode": code,
+	})
+	if err != nil {
+		w.Log.Error("audit: marshal decision", "attemptID", a.AttemptID, "error", err)
+		return
+	}
+	entry := domain.AuditEntry{
+		CycleID:       a.CycleID,
+		CorrelationID: domain.CorrelationID(a.AttemptID),
+		Event:         "attempt_fired",
+		Inputs:        inputs,
+		Decision:      decision,
+		Reason:        "bank returned " + string(outcome),
+	}
+	if err := w.Store.AppendAudit(ctx, entry); err != nil {
+		w.Log.Error("audit: append", "attemptID", a.AttemptID, "error", err)
+	}
 }
 
 func (w *Worker) advanceCycle(ctx context.Context, a domain.Attempt, cycle domain.MandateCycle, resp provider.DebitResponse) error {

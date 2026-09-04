@@ -100,6 +100,30 @@ func TestScheduleFirstAttempt(t *testing.T) {
 	}
 }
 
+func TestScheduleNextAppendsAnAuditEntry(t *testing.T) {
+	s, ctx := testStore(t)
+	c := seedCycle(t, s, ctx, realisticDueDate())
+
+	sched := schedule.New(s, nil)
+	if _, err := sched.ScheduleNext(ctx, c, ""); err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+
+	entries, err := s.AuditByCycle(ctx, c.CycleID)
+	if err != nil {
+		t.Fatalf("audit by cycle: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one audit entry, got %d", len(entries))
+	}
+	if entries[0].Event != "attempt_scheduled" {
+		t.Fatalf("event: got %q want %q", entries[0].Event, "attempt_scheduled")
+	}
+	if entries[0].CorrelationID == "" {
+		t.Fatal("correlationID must be set — it's how this entry links to the attempt it describes")
+	}
+}
+
 func TestScheduleRetryAttempt(t *testing.T) {
 	s, ctx := testStore(t)
 	due := realisticDueDate()

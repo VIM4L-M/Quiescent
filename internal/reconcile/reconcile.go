@@ -2,7 +2,9 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"time"
@@ -81,6 +83,7 @@ func (r *Reconciler) Resolve(ctx context.Context, a domain.Attempt) (Result, err
 		}
 		r.Log.Warn("still unknown after asking the bank; holding for a human",
 			"attemptID", a.AttemptID, "cycleID", a.CycleID, "tries", r.MaxTries)
+		r.appendAudit(ctx, a, "held", fmt.Sprintf("still unknown after %d tries against the bank", r.MaxTries))
 		return ResultHeld, nil
 	}
 
@@ -89,6 +92,7 @@ func (r *Reconciler) Resolve(ctx context.Context, a domain.Attempt) (Result, err
 			return "", err
 		}
 		r.Log.Info("reconciled: debited", "attemptID", a.AttemptID, "cycleID", a.CycleID)
+		r.appendAudit(ctx, a, "recovered", "bank confirmed the debit went through")
 		return ResultRecovered, nil
 	}
 
@@ -97,7 +101,36 @@ func (r *Reconciler) Resolve(ctx context.Context, a domain.Attempt) (Result, err
 	}
 	r.Log.Info("reconciled: not debited, budget refunded",
 		"attemptID", a.AttemptID, "cycleID", a.CycleID, "failureCode", resp.FailureCode)
+	r.appendAudit(ctx, a, "pending", "bank confirmed the debit never went through; budget refunded")
 	return ResultPending, nil
+}
+
+func (r *Reconciler) appendAudit(ctx context.Context, a domain.Attempt, resolution, reason string) {
+	inputs, err := json.Marshal(map[string]any{
+		"idempotencyKey": a.IdempotencyKey,
+	})
+	if err != nil {
+		r.Log.Error("audit: marshal inputs", "attemptID", a.AttemptID, "error", err)
+		return
+	}
+	decision, err := json.Marshal(map[string]any{
+		"resolution": resolution,
+	})
+	if err != nil {
+		r.Log.Error("audit: marshal decision", "attemptID", a.AttemptID, "error", err)
+		return
+	}
+	entry := domain.AuditEntry{
+		CycleID:       a.CycleID,
+		CorrelationID: domain.CorrelationID(a.AttemptID),
+		Event:         "attempt_reconciled",
+		Inputs:        inputs,
+		Decision:      decision,
+		Reason:        reason,
+	}
+	if err := r.Store.AppendAudit(ctx, entry); err != nil {
+		r.Log.Error("audit: append", "attemptID", a.AttemptID, "error", err)
+	}
 }
 
 func fullJitterBackoff(base, cap time.Duration) func(try int) time.Duration {

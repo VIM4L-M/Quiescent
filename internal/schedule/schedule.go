@@ -98,5 +98,36 @@ func (s *Scheduler) ScheduleNext(ctx context.Context, cycle domain.MandateCycle,
 	}
 	s.Log.Info("attempt scheduled",
 		"cycleID", cycle.CycleID, "attemptID", attempt.AttemptID, "seq", seq, "scheduledFor", plan.ScheduledFor)
+	s.appendAudit(ctx, cycle, attempt, plan, hourBasis, lastFailureCode)
 	return ResultScheduled, nil
+}
+
+func (s *Scheduler) appendAudit(ctx context.Context, cycle domain.MandateCycle, attempt domain.Attempt,
+	plan solve.Plan, hourBasis string, lastFailureCode domain.FailureCode) {
+
+	inputs, err := json.Marshal(map[string]any{
+		"attemptsUsed":    cycle.AttemptsUsed,
+		"lastFailureCode": lastFailureCode,
+		"hourBasis":       hourBasis,
+	})
+	if err != nil {
+		s.Log.Error("audit: marshal inputs", "cycleID", cycle.CycleID, "error", err)
+		return
+	}
+	decision, err := json.Marshal(plan.Reason)
+	if err != nil {
+		s.Log.Error("audit: marshal decision", "cycleID", cycle.CycleID, "error", err)
+		return
+	}
+	entry := domain.AuditEntry{
+		CycleID:       cycle.CycleID,
+		CorrelationID: domain.CorrelationID(attempt.AttemptID),
+		Event:         "attempt_scheduled",
+		Inputs:        inputs,
+		Decision:      decision,
+		Reason:        plan.Reason.PredictionBasis,
+	}
+	if err := s.Store.AppendAudit(ctx, entry); err != nil {
+		s.Log.Error("audit: append", "cycleID", cycle.CycleID, "attemptID", attempt.AttemptID, "error", err)
+	}
 }
