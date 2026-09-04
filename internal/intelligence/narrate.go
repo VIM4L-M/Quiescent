@@ -1,14 +1,16 @@
 package intelligence
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/VIM4L-M/Quiescent/internal/domain"
-	"github.com/anthropics/anthropic-sdk-go"
 )
 
 var ErrNoAttempts = errors.New("intelligence: no attempts to narrate")
@@ -43,23 +45,63 @@ func (c *Client) Narrate(ctx context.Context, attempts []domain.Attempt) (string
 	return text, nil
 }
 
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type chatRequest struct {
+	Model               string        `json:"model"`
+	Messages            []chatMessage `json:"messages"`
+	MaxCompletionTokens int           `json:"max_completion_tokens"`
+}
+
+type chatResponse struct {
+	Choices []struct {
+		Message chatMessage `json:"message"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
 func (c *Client) call(ctx context.Context, attempts []domain.Attempt) (string, error) {
-	resp, err := c.api.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     c.model,
-		MaxTokens: 500,
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(buildPrompt(attempts))),
-		},
+	body, err := json.Marshal(chatRequest{
+		Model:               c.model,
+		Messages:            []chatMessage{{Role: "user", Content: buildPrompt(attempts)}},
+		MaxCompletionTokens: 500,
 	})
 	if err != nil {
 		return "", err
 	}
-	for _, block := range resp.Content {
-		if tb, ok := block.AsAny().(anthropic.TextBlock); ok {
-			return tb.Text, nil
-		}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(body))
+	if err != nil {
+		return "", err
 	}
-	return "", errors.New("intelligence: response had no text block")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var out chatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		if out.Error != nil {
+			return "", fmt.Errorf("intelligence: groq %d: %s", resp.StatusCode, out.Error.Message)
+		}
+		return "", fmt.Errorf("intelligence: groq returned %d", resp.StatusCode)
+	}
+	if len(out.Choices) == 0 {
+		return "", errors.New("intelligence: no choices in response")
+	}
+	return out.Choices[0].Message.Content, nil
 }
 
 func buildPrompt(attempts []domain.Attempt) string {

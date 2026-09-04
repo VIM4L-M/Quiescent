@@ -1,17 +1,17 @@
 package intelligence
 
 import (
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
 type Client struct {
-	api     anthropic.Client
-	model   anthropic.Model
+	http    *http.Client
+	apiKey  string
+	baseURL string
+	model   string
 	timeout time.Duration
 	sem     chan struct{}
 	waiting int64
@@ -20,16 +20,14 @@ type Client struct {
 }
 
 func New(apiKey, model string) *Client {
-	var opts []option.RequestOption
-	if apiKey != "" {
-		opts = append(opts, option.WithAPIKey(apiKey))
-	}
 	if model == "" {
-		model = "claude-opus-5"
+		model = "openai/gpt-oss-120b"
 	}
 	return &Client{
-		api:     anthropic.NewClient(opts...),
-		model:   anthropic.Model(model),
+		http:    &http.Client{},
+		apiKey:  apiKey,
+		baseURL: "https://api.groq.com/openai/v1/chat/completions",
+		model:   model,
 		timeout: 10 * time.Second,
 		sem:     make(chan struct{}, 2),
 		maxWait: 10,

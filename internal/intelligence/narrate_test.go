@@ -26,7 +26,7 @@ func attempt(seq int16, outcome *domain.Outcome) domain.Attempt {
 }
 
 func TestNarrateFallsBackWithoutAKey(t *testing.T) {
-	c := intelligence.New("", "claude-opus-5")
+	c := intelligence.New("", "openai/gpt-oss-120b")
 	outcome := domain.OutcomeFailure
 	text, err := c.Narrate(context.Background(), []domain.Attempt{attempt(1, &outcome)})
 	if err != nil {
@@ -38,7 +38,7 @@ func TestNarrateFallsBackWithoutAKey(t *testing.T) {
 }
 
 func TestNarrateRejectsEmptyAttempts(t *testing.T) {
-	c := intelligence.New("", "claude-opus-5")
+	c := intelligence.New("", "openai/gpt-oss-120b")
 	_, err := c.Narrate(context.Background(), nil)
 	if !errors.Is(err, intelligence.ErrNoAttempts) {
 		t.Fatalf("want ErrNoAttempts, got %v", err)
@@ -46,7 +46,7 @@ func TestNarrateRejectsEmptyAttempts(t *testing.T) {
 }
 
 func TestNarrateNeverBlocksPastItsTimeout(t *testing.T) {
-	c := intelligence.New("bad-key-forces-a-real-call-that-will-fail-fast", "claude-opus-5")
+	c := intelligence.New("bad-key-forces-a-real-call-that-will-fail-fast", "openai/gpt-oss-120b")
 	start := time.Now()
 	outcome := domain.OutcomeFailure
 	if _, err := c.Narrate(context.Background(), []domain.Attempt{attempt(1, &outcome)}); err != nil {
