@@ -20,6 +20,7 @@ tmp/
 
 *.log
 logs/
+*.jsonl
 
 .DS_Store
 .idea/
