@@ -46,7 +46,7 @@ func TestReserveAttemptSucceedsAndAdvancesBudget(t *testing.T) {
 
 	a := reserveTestAttempt(t, c, 1)
 	deliverBy := a.ScheduledFor.Add(-24 * time.Hour)
-	err := s.ReserveAttempt(ctx, c.CycleID, 0, a, json.RawMessage(`{}`), deliverBy)
+	_, err := s.ReserveAttempt(ctx, c.CycleID, 0, a, json.RawMessage(`{}`), deliverBy)
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestC5ReserveAttemptRejectsStaleVersion(t *testing.T) {
 	c := seedCycle(t, s, ctx)
 
 	a := reserveTestAttempt(t, c, 1)
-	if err := s.ReserveAttempt(ctx, c.CycleID, 999, a, json.RawMessage(`{}`), a.ScheduledFor); !errors.Is(err, ErrConflict) {
+	if _, err := s.ReserveAttempt(ctx, c.CycleID, 999, a, json.RawMessage(`{}`), a.ScheduledFor); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale version: want ErrConflict, got %v", err)
 	}
 
@@ -112,7 +112,7 @@ func TestC7ReserveAttemptLeavesNothingBehindOnFailure(t *testing.T) {
 	bad := reserveTestAttempt(t, c, 1)
 	bad.DecisionReason.Class = "not-a-real-class"
 
-	err := s.ReserveAttempt(ctx, c.CycleID, 0, bad, json.RawMessage(`{}`), bad.ScheduledFor)
+	_, err := s.ReserveAttempt(ctx, c.CycleID, 0, bad, json.RawMessage(`{}`), bad.ScheduledFor)
 	if err == nil {
 		t.Fatal("expected the attempt insert to fail its own validation")
 	}
@@ -124,6 +124,44 @@ func TestC7ReserveAttemptLeavesNothingBehindOnFailure(t *testing.T) {
 	if got.AttemptsUsed != 0 || got.Version != 0 {
 		t.Fatalf("budget must not be burned when the attempt insert fails: attemptsUsed=%d version=%d",
 			got.AttemptsUsed, got.Version)
+	}
+}
+
+func TestC10SeqSurvivesAnAbandonAndRefund(t *testing.T) {
+	s, ctx := testStore(t)
+	c := seedFreshCycle(t, s, ctx)
+
+	first := reserveTestAttempt(t, c, 1)
+	first, err := s.ReserveAttempt(ctx, c.CycleID, 0, first, json.RawMessage(`{}`), first.ScheduledFor)
+	if err != nil {
+		t.Fatalf("reserve first: %v", err)
+	}
+	if first.Seq != 1 {
+		t.Fatalf("first attempt: got seq %d want 1", first.Seq)
+	}
+
+	if err := s.AbandonAttempt(ctx, first.AttemptID); err != nil {
+		t.Fatalf("abandon first: %v", err)
+	}
+	refunded, err := s.Cycle(ctx, c.CycleID)
+	if err != nil {
+		t.Fatalf("load cycle after abandon: %v", err)
+	}
+	if refunded.AttemptsUsed != 0 || refunded.State != domain.StatePending {
+		t.Fatalf("abandon must refund budget and return to pending: attemptsUsed=%d state=%q",
+			refunded.AttemptsUsed, refunded.State)
+	}
+
+	second := reserveTestAttempt(t, c, 1)
+	second, err = s.ReserveAttempt(ctx, c.CycleID, refunded.Version, second, json.RawMessage(`{}`), second.ScheduledFor)
+	if err != nil {
+		t.Fatalf("reserve second (must not collide with the abandoned attempt's idempotency key): %v", err)
+	}
+	if second.Seq != 2 {
+		t.Fatalf("second attempt: got seq %d want 2 — a permanently-taken idempotency key must never be reused", second.Seq)
+	}
+	if second.IdempotencyKey == first.IdempotencyKey {
+		t.Fatal("second attempt reused the first attempt's idempotency key")
 	}
 }
 
@@ -139,7 +177,7 @@ func TestReserveAttemptRejectsWhenBudgetExhausted(t *testing.T) {
 	}
 
 	a := reserveTestAttempt(t, c, domain.MaxAttempts+1)
-	if err := s.ReserveAttempt(ctx, c.CycleID, c.Version, a, json.RawMessage(`{}`), a.ScheduledFor); !errors.Is(err, ErrConflict) {
+	if _, err := s.ReserveAttempt(ctx, c.CycleID, c.Version, a, json.RawMessage(`{}`), a.ScheduledFor); !errors.Is(err, ErrConflict) {
 		t.Fatalf("exhausted budget: want ErrConflict, got %v", err)
 	}
 }

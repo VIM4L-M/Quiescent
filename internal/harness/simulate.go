@@ -36,18 +36,21 @@ func decide(w *provider.World, seed int64, c CycleSpec, attemptNumber int, fired
 	})
 }
 
+const mandateSetupLead = 30 * 24 * time.Hour
+
 func SimulateSystem(w *provider.World, seed int64, c CycleSpec, history []time.Time) Outcome {
 	var attemptsUsed int16
 	var lastCode domain.FailureCode
 	preferredHour, _ := predict.PreferredHour(history)
+	decidedAt := c.DueDate.Add(-mandateSetupLead)
 
 	for attemptsUsed < int16(domain.MaxAttempts) {
 		var plan solve.Plan
 		if attemptsUsed == 0 {
-			plan = solve.First(c.DueDate, preferredHour)
+			plan = solve.First(c.DueDate, preferredHour, decidedAt)
 		} else {
 			class, _ := classify.Classify(lastCode)
-			p, ok := solve.Next(c.DueDate, attemptsUsed, lastCode, class, preferredHour)
+			p, ok := solve.Next(c.DueDate, attemptsUsed, lastCode, class, preferredHour, decidedAt)
 			if !ok {
 				return Outcome{Recovered: false, AttemptsUsed: int(attemptsUsed)}
 			}
@@ -59,6 +62,7 @@ func SimulateSystem(w *provider.World, seed int64, c CycleSpec, history []time.T
 			return Outcome{Recovered: true, AttemptsUsed: int(attemptsUsed), FiredAt: plan.ScheduledFor}
 		}
 		lastCode = result.FailureCode
+		decidedAt = plan.ScheduledFor
 	}
 	return Outcome{Recovered: false, AttemptsUsed: int(attemptsUsed)}
 }

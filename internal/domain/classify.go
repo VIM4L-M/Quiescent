@@ -42,5 +42,6 @@ type DecisionReason struct {
 type ReasonConstraints struct {
 	BlockedWindowShift string `json:"blockedWindowShift"`
 	NoticeDeadline     string `json:"noticeDeadline"`
+	NoticeLeadShift    string `json:"noticeLeadShift"`
 	RailRules          string `json:"railRules"`
 }

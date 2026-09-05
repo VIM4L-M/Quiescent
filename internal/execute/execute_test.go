@@ -314,6 +314,43 @@ func TestFireOneAbandonsUndeliveredNotice(t *testing.T) {
 	}
 }
 
+func TestFireOneToleratesLosingTheAbandonRaceToNoticeRelay(t *testing.T) {
+	s, ctx := testStore(t)
+	bank, _ := testBank(t)
+	c := seedCycle(t, s, ctx, 50_000)
+	a := seedAttempt(t, s, ctx, c, time.Now().UTC().Add(-1*time.Hour))
+	deliverNotice(t, s, ctx, c, a)
+
+	if err := s.AbandonAttempt(ctx, a.AttemptID); err != nil {
+		t.Fatalf("simulate the outbox relay winning the abandon race: %v", err)
+	}
+
+	w := execute.New(s, bank, "worker-a", nil)
+	result, err := w.FireOne(ctx, a)
+	if err != nil {
+		t.Fatalf("fire one must tolerate losing the race, not propagate the conflict as an error: %v", err)
+	}
+	if result != execute.ResultNotMyTurn {
+		t.Fatalf("result: got %v want %v", result, execute.ResultNotMyTurn)
+	}
+
+	got, err := s.Attempt(ctx, a.AttemptID)
+	if err != nil {
+		t.Fatalf("load attempt: %v", err)
+	}
+	if got.Outcome == nil || *got.Outcome != domain.OutcomeAbandonedStale {
+		t.Fatalf("outcome: got %v want ABANDONED_STALE from whichever side actually won the race", got.Outcome)
+	}
+
+	cycle, err := s.Cycle(ctx, c.CycleID)
+	if err != nil {
+		t.Fatalf("load cycle: %v", err)
+	}
+	if cycle.AttemptsUsed != c.AttemptsUsed-1 {
+		t.Fatalf("attemptsUsed: got %d want %d — the race must refund budget exactly once, not twice", cycle.AttemptsUsed, c.AttemptsUsed-1)
+	}
+}
+
 func TestFireOneAbandonsStaleAttempt(t *testing.T) {
 	s, ctx := testStore(t)
 	bank, _ := testBank(t)

@@ -46,6 +46,7 @@ func (s *Store) NeedsReconciliation(ctx context.Context, limit int) ([]domain.At
 	const q = `SELECT ` + attemptColumns + `
 		  FROM attempts
 		 WHERE outcome = 'TIMEOUT'
+		    OR (fired_at IS NOT NULL AND outcome IS NULL)
 		 ORDER BY scheduled_for
 		 LIMIT $1`
 	rows, err := s.q.Query(ctx, q, limit)
@@ -67,7 +68,9 @@ func (s *Store) ResolveDebited(ctx context.Context, attemptID domain.AttemptID) 
 		const markQ = `
 			UPDATE attempts
 			   SET outcome = 'SUCCESS'
-			 WHERE attempt_id = $1 AND outcome = 'TIMEOUT'
+			 WHERE attempt_id = $1
+			   AND fired_at IS NOT NULL
+			   AND (outcome = 'TIMEOUT' OR outcome IS NULL)
 			RETURNING cycle_id`
 		var cycleID domain.CycleID
 		err := tx.q.QueryRow(ctx, markQ, attemptID).Scan(&cycleID)
@@ -89,7 +92,9 @@ func (s *Store) ResolveNotDebited(ctx context.Context, attemptID domain.AttemptI
 		const markQ = `
 			UPDATE attempts
 			   SET outcome = 'ABANDONED_STALE'
-			 WHERE attempt_id = $1 AND outcome = 'TIMEOUT'
+			 WHERE attempt_id = $1
+			   AND fired_at IS NOT NULL
+			   AND (outcome = 'TIMEOUT' OR outcome IS NULL)
 			RETURNING cycle_id`
 		var cycleID domain.CycleID
 		err := tx.q.QueryRow(ctx, markQ, attemptID).Scan(&cycleID)

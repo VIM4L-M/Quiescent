@@ -30,6 +30,18 @@ func NewAttemptID() AttemptID {
 	return AttemptID(newUUID())
 }
 
+func NewCycleID() CycleID {
+	return CycleID(newUUID())
+}
+
+func NewMandateID() MandateID {
+	return MandateID(newUUID())
+}
+
+func NewCustomerID() CustomerID {
+	return CustomerID(newUUID())
+}
+
 func NewCorrelationID() CorrelationID {
 	return CorrelationID(newUUID())
 }

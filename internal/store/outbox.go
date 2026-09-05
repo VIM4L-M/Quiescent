@@ -27,13 +27,17 @@ func (s *Store) QueueNotice(ctx context.Context, cycleID domain.CycleID, attempt
 }
 
 func (s *Store) MarkNoticeDelivered(ctx context.Context, attemptID domain.AttemptID, kind domain.OutboxKind) error {
+	return s.MarkNoticeDeliveredAt(ctx, attemptID, kind, time.Now().UTC())
+}
+
+func (s *Store) MarkNoticeDeliveredAt(ctx context.Context, attemptID domain.AttemptID, kind domain.OutboxKind, deliveredAt time.Time) error {
 	if !kind.Valid() {
 		return fmt.Errorf("%w: outbox kind %q", ErrInvalidEnum, kind)
 	}
 	const q = `
-		UPDATE outbox SET delivered_at = now()
+		UPDATE outbox SET delivered_at = $3
 		 WHERE attempt_id = $1 AND kind = $2 AND delivered_at IS NULL`
-	tag, err := s.q.Exec(ctx, q, attemptID, kind)
+	tag, err := s.q.Exec(ctx, q, attemptID, kind, deliveredAt)
 	return expectOne("store: mark notice delivered", tag, err)
 }
 

@@ -58,12 +58,15 @@ func seedCycle(t *testing.T, s *store.Store, ctx context.Context, dueDate time.T
 	return c
 }
 
-// realisticDueDate returns midnight UTC on a near-future date — what
-// due_date (a DATE column, no time component) actually holds once a cycle
-// has round-tripped through Postgres even once. 00:00 UTC = 05:30 IST,
-// outside the 10:00-13:00 IST blocked window.
+// realisticDueDate returns midnight UTC two days out — what due_date (a
+// DATE column, no time component) actually holds once a cycle has
+// round-tripped through Postgres even once. 00:00 UTC = 05:30 IST, outside
+// the 10:00-13:00 IST blocked window. Two days, not one: a mandate is set
+// up well before it's due in practice, and one day out can be less than
+// 24h away by the time a test actually runs later in the day — too close
+// to leave room for the mandatory pre-debit notice.
 func realisticDueDate() time.Time {
-	return time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, 1)
+	return time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, 2)
 }
 
 func TestScheduleFirstAttempt(t *testing.T) {

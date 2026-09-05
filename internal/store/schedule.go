@@ -12,12 +12,12 @@ import (
 )
 
 func (s *Store) ReserveAttempt(ctx context.Context, cycleID domain.CycleID, expectedVersion int64,
-	a domain.Attempt, noticePayload json.RawMessage, deliverBy time.Time) error {
+	a domain.Attempt, noticePayload json.RawMessage, deliverBy time.Time) (domain.Attempt, error) {
 
 	if cycleID == "" {
-		return fmt.Errorf("%w: cycleID is required", ErrInvalidArgument)
+		return domain.Attempt{}, fmt.Errorf("%w: cycleID is required", ErrInvalidArgument)
 	}
-	return s.Tx(ctx, func(tx *Store) error {
+	err := s.Tx(ctx, func(tx *Store) error {
 		const reserveQ = `
 			UPDATE mandate_cycles
 			   SET attempts_used = attempts_used + 1, version = version + 1, state = 'scheduled'
@@ -31,9 +31,19 @@ func (s *Store) ReserveAttempt(ctx context.Context, cycleID domain.CycleID, expe
 			}
 			return mapError("store: reserve attempt", err)
 		}
+
+		const everMadeQ = `SELECT count(*) FROM attempts WHERE cycle_id = $1`
+		var everMade int64
+		if err := tx.q.QueryRow(ctx, everMadeQ, cycleID).Scan(&everMade); err != nil {
+			return mapError("store: reserve attempt: seq", err)
+		}
+		a.Seq = int16(everMade) + 1
+		a.IdempotencyKey = domain.NewIdempotencyKey(cycleID, a.Seq)
+
 		if err := tx.InsertAttempt(ctx, a); err != nil {
 			return err
 		}
 		return tx.QueueNotice(ctx, cycleID, a.AttemptID, domain.OutboxPreDebitNotice, noticePayload, deliverBy)
 	})
+	return a, err
 }

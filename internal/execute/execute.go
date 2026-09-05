@@ -54,6 +54,11 @@ func New(s *store.Store, bank *provider.Client, holder string, log *slog.Logger)
 func (w *Worker) FireOne(ctx context.Context, a domain.Attempt) (Result, error) {
 	if w.Now().Sub(a.ScheduledFor) > staleAfter {
 		if err := w.Store.AbandonAttempt(ctx, a.AttemptID); err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				w.Log.Info("attempt already resolved by another process; skipping",
+					"attemptID", a.AttemptID, "cycleID", a.CycleID)
+				return ResultNotMyTurn, nil
+			}
 			return "", err
 		}
 		w.Log.Warn("attempt abandoned as stale",
@@ -75,6 +80,11 @@ func (w *Worker) FireOne(ctx context.Context, a domain.Attempt) (Result, error) 
 	}
 	if !delivered {
 		if err := w.Store.AbandonAttempt(ctx, a.AttemptID); err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				w.Log.Info("attempt already resolved by another process; skipping",
+					"attemptID", a.AttemptID, "cycleID", a.CycleID)
+				return ResultNotMyTurn, nil
+			}
 			return "", err
 		}
 		w.Log.Warn("attempt abandoned, pre-debit notice not delivered",

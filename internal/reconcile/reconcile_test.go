@@ -159,6 +159,31 @@ func fireAndTimeout(t *testing.T, s *store.Store, bank *provider.Client, c domai
 	time.Sleep(300 * time.Millisecond)
 }
 
+// fireAndCrash is fireAndTimeout without the final RecordAttemptOutcome call —
+// it stops exactly where a real process crash would: fired_at is set, the bank
+// has been asked, and nothing ever runs the line that would have recorded
+// TIMEOUT. This is the genuine C3 shape, not the in-process-error shape.
+func fireAndCrash(t *testing.T, s *store.Store, bank *provider.Client, c domain.MandateCycle, a domain.Attempt) {
+	t.Helper()
+	ctx := context.Background()
+
+	handle, err := lease.Acquire(ctx, s, c.CycleID, "worker-a", 1*time.Millisecond)
+	if err != nil {
+		t.Fatalf("acquire lease: %v", err)
+	}
+	if err := s.MarkAttemptFired(ctx, a.AttemptID, handle.Fence); err != nil {
+		t.Fatalf("mark fired: %v", err)
+	}
+	_, _ = bank.Debit(ctx, provider.DebitRequest{
+		CycleID:        c.CycleID,
+		IdempotencyKey: a.IdempotencyKey,
+		Fence:          int64(handle.Fence),
+		AmountPaise:    c.AmountPaise,
+		Rail:           c.Rail,
+	})
+	time.Sleep(300 * time.Millisecond)
+}
+
 func TestResolveRecoversWhenDebited(t *testing.T) {
 	s, ctx := testStore(t)
 	bank, _ := testBank(t)
@@ -313,5 +338,53 @@ func TestC6ResolveSkipsWhenLeaseHeld(t *testing.T) {
 	}
 	if result != reconcile.ResultNotMyTurn {
 		t.Fatalf("result: got %v want %v — three reconcilers must never race on the same cycle", result, reconcile.ResultNotMyTurn)
+	}
+}
+
+func TestC3ReconciliationCatchesAGenuineProcessCrashNotJustAnExplicitTimeout(t *testing.T) {
+	s, ctx := testStore(t)
+	bank, _ := testBank(t)
+	c := seedCycle(t, s, ctx, 50_000)
+	a := seedAttempt(t, s, ctx, c)
+	fireAndCrash(t, s, bank, c, a)
+
+	before, err := s.Attempt(ctx, a.AttemptID)
+	if err != nil {
+		t.Fatalf("load attempt: %v", err)
+	}
+	if before.Outcome != nil {
+		t.Fatalf("setup broken: outcome should still be NULL after a simulated crash, got %v", *before.Outcome)
+	}
+
+	needing, err := s.NeedsReconciliation(ctx, 50)
+	if err != nil {
+		t.Fatalf("needs reconciliation: %v", err)
+	}
+	found := false
+	for _, na := range needing {
+		if na.AttemptID == a.AttemptID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("an attempt with fired_at set and outcome truly NULL (a genuine crash) must be found for reconciliation — " +
+			"a query that only looks for outcome='TIMEOUT' misses exactly the crash it exists to catch")
+	}
+
+	r := reconcile.New(s, bank, "reconciler-a", nil)
+	result, err := r.Resolve(ctx, a)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result != reconcile.ResultRecovered && result != reconcile.ResultPending {
+		t.Fatalf("result: got %v want recovered or pending", result)
+	}
+
+	after, err := s.Attempt(ctx, a.AttemptID)
+	if err != nil {
+		t.Fatalf("load attempt: %v", err)
+	}
+	if after.Outcome == nil {
+		t.Fatal("a genuinely crashed attempt must come out of reconciliation resolved, not still NULL forever")
 	}
 }

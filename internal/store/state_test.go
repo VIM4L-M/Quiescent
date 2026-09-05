@@ -11,7 +11,7 @@ func TestReserveAttemptSetsCycleScheduled(t *testing.T) {
 	c := seedFreshCycle(t, s, ctx)
 	a := reserveTestAttempt(t, c, 1)
 
-	if err := s.ReserveAttempt(ctx, c.CycleID, 0, a, []byte(`{}`), a.ScheduledFor); err != nil {
+	if _, err := s.ReserveAttempt(ctx, c.CycleID, 0, a, []byte(`{}`), a.ScheduledFor); err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
 
