@@ -1,6 +1,6 @@
 # quiescent
 
-**Razorpay AI Buildathon · Track 03 (AI Revenue Recovery)**
+![quiescent — a durable retry sequencer for failed mandate debits](image/image.png)
 
 > A durable retry sequencer for failed mandate debits. Spends a scarce,
 > regulator-capped attempt budget optimally — and never debits twice, even
