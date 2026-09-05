@@ -6,14 +6,15 @@
 
 ## 1. Shape of the system
 
-One Go module. One build. One executable. The `--role` flag selects behaviour
-at startup.
+One Go module. One build. One executable, `quiescent`. A Cobra subcommand
+selects behaviour at startup — four subcommands run forever as independent
+processes; the rest run once and exit.
 
 ```
-./quiescent --role=scheduler       ×1
-./quiescent --role=worker          ×3
-./quiescent --role=intelligence    ×1
-./quiescent --role=provider-sim    ×1
+quiescent scheduler         ×1
+quiescent worker            ×3
+quiescent intelligence      ×1
+quiescent provider-sim      ×1
 ```
 
 Six processes at runtime. Every boundary exists because a specific failure
@@ -40,11 +41,11 @@ the test environment.
 
 ```mermaid
 flowchart TB
-    FEED["Failure event feed<br/>synthetic stream"]
+    CLI["quiescent create / seed<br/>a mandate cycle becomes due"]
 
     subgraph KERNEL["payment kernel · deterministic · owns money"]
-      SCHED["scheduler ×1<br/>classify · predict · solve<br/>reserve attempt · queue notice"]
-      W1["worker ×3<br/>lease · gate · fire · record · reconcile<br/>+ outbox relay"]
+      SCHED["scheduler ×1<br/>predict · solve<br/>reserve attempt · queue notice"]
+      W1["worker ×3<br/>lease · gate · fire · record · reconcile<br/>classify unmapped codes · outbox relay"]
     end
 
     subgraph EDGE["edge · advisory only · cannot move money"]
@@ -55,16 +56,20 @@ flowchart TB
 
     DB[("Postgres<br/>cycles · attempts · leases<br/>outbox · audit log")]
 
-    FEED -->|idempotent ingest| SCHED
+    CLI -->|CreateCycle| DB
     SCHED -->|read + write| DB
-    SCHED -.->|"propose(code) · 2s timeout<br/>circuit breaker · bounded concurrency<br/>degrades to human queue"| INTEL
     W1 -->|"claim: FOR UPDATE SKIP LOCKED"| DB
     W1 -->|"debit + idempotency key + fence"| PROV
     PROV -->|"success · failure · TIMEOUT"| W1
+    W1 -.->|"Propose(code) · 2s timeout<br/>circuit breaker · bounded concurrency<br/>degrades to human queue"| INTEL
     W1 -->|append attempt, outcome, reason| DB
-    DB -.->|read-only| INTEL
+    DB -.->|reads batch outcomes only| INTEL
     INTEL -.->|narration + proposals · never state writes| DB
 ```
+
+The AI-classify call is made by the **worker**, not the scheduler — an
+unmapped failure code is only discovered the moment a real debit outcome
+comes back, which happens on the execution side, not the planning side.
 
 Every dotted edge is advisory and can fail without stopping a debit. Solid
 lines are the money path.
@@ -85,15 +90,17 @@ manufacturing the exact problem this system exists to eliminate.
 from the scheduler would bypass the lease, the fence, the write-ahead record,
 and the notice gate — all four protections at once.
 
-1. Ingest failure events, deduplicated on `execution_id`
-2. Load or create the cycle — **excluding any in `unknown` or `held`**
-3. Check attempt budget, atomically, before anything else
-4. Classify the failure code against the deterministic table
-5. On unmapped codes only, ask `intelligence` (2s timeout; failure or low
-   confidence → human queue)
-6. Predict funds-availability window from customer history
-7. Solve constraints → a concrete `scheduledFor`, or "no viable slot"
-8. **Reserve budget, insert the attempt, and queue the pre-debit notice — in
+1. Load a cycle due for a scheduling decision — **excluding any in `unknown`
+   or `held`**
+2. Check attempt budget, atomically, before anything else
+3. Classify the last failure code against the deterministic table (pure,
+   no I/O — an unmapped code is handled later, by the worker, once a real
+   outcome exists to classify)
+4. Predict funds-availability / a preferred hour from customer history
+5. Solve constraints → a concrete `scheduledFor` that respects the blocked
+   windows *and* leaves real room for the 24h pre-debit notice, or "no
+   viable slot"
+6. **Reserve budget, insert the attempt, and queue the pre-debit notice — in
    one transaction**
 
 Single instance. If it dies, nothing is scheduled until restart, but nothing is
@@ -113,16 +120,22 @@ re-validates before firing and can veto. Vetoing is not deciding.
 6. Write the attempt record **before** firing
 7. Fire the debit with an idempotency key and the captured fence
 8. Record the outcome, or transition to `unknown` on timeout
-9. Run the reconciliation loop for cycles in `unknown`
-10. Run the outbox relay for undelivered notices past `deliverBy`
+9. **On a failure code the deterministic table doesn't cover, ask
+   `intelligence`** (2s timeout; failure or low confidence → human queue) —
+   this is the one point where the worker consults the AI, since an
+   unmapped code is only ever discovered once a real outcome exists
+10. Run the reconciliation loop for cycles in `unknown`
+11. Run the outbox relay for undelivered notices past `deliverBy`
 
 Three instances so lease contention is real. Kill one mid-debit and the others
 must handle it correctly — that is the demo.
 
 ### `intelligence` (×1) — advises, never acts
 
-**Forbidden: writing anything.** Read-only DB credentials. No provider client.
-No store interface. It receives one method returning a value.
+**Forbidden: writing anything.** No database credentials at all — not even
+read-only. No provider client. No store interface. It receives values in
+memory (a failure code, an aggregated batch of outcomes) and returns a
+value; it never queries Postgres itself.
 
 - Classify failure codes the deterministic table does not cover, with confidence
 - Narrate audit trails into human-readable explanations
@@ -158,7 +171,7 @@ where money actually moved.
 ## 4. Package layout
 
 ```
-cmd/quiescent/main.go       role dispatch, wiring, config
+cmd/quiescent/              Cobra command wiring, config, one file per subcommand
 
 internal/
   domain/                 types, states, interfaces. IMPORTS NOTHING.
@@ -168,13 +181,15 @@ internal/
   solve/                  constraints → scheduledFor. pure.
   schedule/               scheduler role
 
-  execute/                worker role: lease, gate, fire, record
+  execute/                worker role: lease, gate, fire, record, classify
   reconcile/              unknown resolution
   outbox/                 notice relay + delivery gate
 
   lease/                  acquisition, fencing, expiry
   store/                  Postgres. THE ONLY package that talks to the DB.
-  audit/                  append-only decision log
+                          (append-only decision log lives here too —
+                          AppendAudit/AuditByCycle — a standalone audit/
+                          package would only wrap those two functions)
 
   intelligence/           LLM client. THE ONLY package importing an LLM SDK.
   provider/               simulator + client
@@ -388,31 +403,49 @@ never burn a budget slot with no attempt row to show for it.
 BEGIN;
   UPDATE mandate_cycles
      SET attempts_used = attempts_used + 1,
-         version       = version + 1
+         version       = version + 1,
+         state         = 'scheduled'
    WHERE cycle_id = $1
      AND version  = $2
      AND attempts_used < 4
   RETURNING attempts_used;        -- 0 rows → ROLLBACK, do not schedule
 
+  SELECT count(*) FROM attempts WHERE cycle_id = $1;   -- seq = this + 1
+
   INSERT INTO attempts
     (attempt_id, cycle_id, seq, idempotency_key, scheduled_for, decision_reason)
-  VALUES ($3, $1, $seq, $1 || ':' || $seq, $4, $5);
+  VALUES ($3, $1, $seq, $4, $5, $6);        -- idempotency_key computed in Go
 
   INSERT INTO outbox (cycle_id, attempt_id, kind, payload, deliver_by)
-  VALUES ($1, $3, 'pre_debit_notice', $6, $4 - interval '24 hours');
+  VALUES ($1, $3, 'pre_debit_notice', $7, $5 - interval '24 hours');
 COMMIT;
 ```
 
 Compare-and-set, not read-then-write. Zero rows means the budget is spent or
 another writer won — either way you do not fire.
 
-Three statements, one transaction. Separate them and a crash between the first
-two burns budget silently, or a crash before the third schedules a debit with
-no notice — a compliance violation with no error and no log line.
+The idempotency key is computed **in Go**
+(`domain.NewIdempotencyKey(cycleID, seq)`), bound as a parameter — never
+concatenated in SQL, since `provider` already computes the same format
+independently and the two must never drift apart.
+
+**`seq` comes from a count of every attempt row ever inserted for this
+cycle — not from `attempts_used`.** The two look interchangeable but
+aren't: `attempts_used` is refundable (an abandoned, notice-missed attempt
+gives its slot back), while `attempts` is append-only, so its idempotency
+key stays permanently claimed. Deriving `seq` from the refundable counter
+means a refund-then-reschedule recomputes a seq number that's already
+taken, and the insert collides forever. Found live, 2026-09-05 — see
+`docs/JOURNAL.md`.
+
+Four statements, one transaction. Separate them and a crash partway through
+burns budget silently, schedules a debit with no notice queued, or reuses a
+sequence number that's already taken.
 
 **Claim:** `attempts_used` never exceeds 4 under any interleaving, never
-advances without a corresponding attempt row, and no attempt exists without a
-queued notice.
+advances without a corresponding attempt row, no attempt exists without a
+queued notice, and no two attempts on the same cycle ever share a sequence
+number, no matter how many times one gets abandoned and refunded.
 
 ### 6.2 Lease acquisition with fencing token
 
@@ -584,18 +617,22 @@ during a debit — is precisely the thing that *should* die with the process.
 
 ## 9. Deployment
 
-```yaml
-services:
-  postgres:
-  scheduler:      { command: --role=scheduler }
-  worker-1:       { command: --role=worker --id=w1 }
-  worker-2:       { command: --role=worker --id=w2 }
-  worker-3:       { command: --role=worker --id=w3 }
-  intelligence:   { command: --role=intelligence }
-  provider-sim:   { command: --role=provider-sim }
+`docker-compose.yml` runs Postgres only — the four long-running roles are
+plain OS processes, one per terminal, sharing the same `DB_URL`:
+
+```
+docker-compose up -d                 # Postgres
+go build -o quiescent.exe ./cmd/quiescent
+
+quiescent provider-sim                # terminal 2
+quiescent scheduler                   # terminal 3
+quiescent worker                      # terminal 4, run three times for ×3
+quiescent intelligence                # terminal 5
 ```
 
-`docker compose up`, then `docker kill worker-2` mid-debit for the demo.
+Kill and restart a `worker` process mid-debit for the crash demo — the same
+effect the compose-service version would have had, without needing the app
+itself containerized.
 
 ---
 
@@ -605,16 +642,19 @@ Not a test suite bolted on at the end — the deliverable that produces the
 "what broke" story. **Each mechanism gets its injection test the same day it is
 built.**
 
-- Kill a worker at 12 named points across the debit lifecycle
-  (`CRASH_AT=AFTER_DEBIT_SEND`)
-- Freeze a worker past lease expiry (`STALL_AFTER_LEASE=45s`) — the
-  stalled-holder race
-- Provider: `timeoutAfterCommit`, `timeoutBeforeCommit`, `downtime`, `latency`
-- Skew a worker's clock
-- Replay a duplicate failure event
-- Restart the scheduler with 400 overdue attempts
+- **Provider-side injection**, over the simulator's own `/inject` endpoint —
+  `timeoutAfterCommit`, `timeoutBeforeCommit`, `downtime`, `latency`,
+  `revokeMandate`, scopable to one cycle with an optional request count
+- **Crash points reproduced directly in Go tests**, not via an env-var
+  switch on the real binary — a helper stops execution at the exact point a
+  real crash would (fired, bank asked, outcome never recorded), which is
+  how `TestC3ReconciliationCatchesAGenuineProcessCrashNotJustAnExplicitTimeout`
+  and the C4 stalled-worker tests are built
+- Restart the scheduler with a large overdue backlog — the thundering-herd
+  scenario in §7
 - Revoke a mandate between scheduling and firing
-- Kill the outbox relay — attempts come due, the notice gate holds, nothing fires
+- Kill the outbox relay — attempts come due, the notice gate holds, nothing
+  fires
 
 ### Invariants — every run, every injection point
 
@@ -638,22 +678,26 @@ SELECT c.cycle_id FROM mandate_cycles c
     WHERE a.cycle_id = c.cycle_id
       AND (a.outcome IS NULL OR a.outcome <> 'ABANDONED_STALE'));
 
--- 5. No attempt fired into a blocked window (the window is an IST fact;
---    fired_at is timestamptz and a bare ::time renders it in whatever the
---    session TimeZone happens to be — under UTC this checks 04:30–07:30 IST
---    and returns zero rows for the wrong reason)
+-- 5. No attempt fired into either blocked window (the windows are an IST
+--    fact; fired_at is timestamptz and a bare ::time renders it in whatever
+--    the session TimeZone happens to be — under UTC this checked the wrong
+--    hours entirely and returned zero rows for the wrong reason)
 SELECT attempt_id FROM attempts
- WHERE (fired_at AT TIME ZONE 'Asia/Kolkata')::time BETWEEN '10:00' AND '13:00';
+ WHERE (fired_at AT TIME ZONE 'Asia/Kolkata')::time BETWEEN '10:00' AND '13:00'
+    OR (fired_at AT TIME ZONE 'Asia/Kolkata')::time BETWEEN '17:00' AND '21:30';
 
--- 6. No attempt fired without a delivered notice. LEFT JOIN, with `kind` in the
---    ON clause — an inner join sees only attempts that already have a notice
---    row, so it catches "queued but undelivered" and goes blind to "never
---    queued at all", which is the severe case. Moving `kind` to WHERE converts
---    it back into an inner join and reintroduces exactly that.
+-- 6. No attempt fired without a notice delivered at least 24h ahead. LEFT
+--    JOIN, with `kind` in the ON clause — an inner join sees only attempts
+--    that already have a notice row, so it catches "queued but undelivered"
+--    and goes blind to "never queued at all", which is the severe case.
+--    Moving `kind` to WHERE converts it back into an inner join and
+--    reintroduces exactly that. The second OR condition catches a notice
+--    that *was* delivered, but too close to firing to count as real notice.
 SELECT a.attempt_id FROM attempts a
   LEFT JOIN outbox o
     ON o.attempt_id = a.attempt_id AND o.kind = 'pre_debit_notice'
- WHERE a.fired_at IS NOT NULL AND o.delivered_at IS NULL;
+ WHERE a.fired_at IS NOT NULL
+   AND (o.delivered_at IS NULL OR o.delivered_at > a.fired_at - interval '24 hours');
 ```
 
 All six return **zero rows**. The correctness claim is not a log line saying
