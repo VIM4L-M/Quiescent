@@ -32,6 +32,18 @@ type classifyResult struct {
 }
 
 func (c *Client) Propose(ctx context.Context, code domain.FailureCode, data domain.ClassificationContext) (domain.Proposal, error) {
+	return c.classifyCall(ctx, buildClassifyPrompt(code, data))
+}
+
+type Advisor interface {
+	Advise(ctx context.Context, stat domain.FailureCodeStat) (domain.Proposal, error)
+}
+
+func (c *Client) Advise(ctx context.Context, stat domain.FailureCodeStat) (domain.Proposal, error) {
+	return c.classifyCall(ctx, buildAdvisePrompt(stat))
+}
+
+func (c *Client) classifyCall(ctx context.Context, prompt string) (domain.Proposal, error) {
 	fallback := domain.Proposal{Class: domain.ClassManualReview, Confidence: 0, Rationale: "unavailable, sent to human queue"}
 
 	if c.breaker.open() {
@@ -48,7 +60,7 @@ func (c *Client) Propose(ctx context.Context, code domain.FailureCode, data doma
 
 	text, err := c.chatCompletion(callCtx, chatRequest{
 		Model:               c.model,
-		Messages:            []chatMessage{{Role: "user", Content: buildClassifyPrompt(code, data)}},
+		Messages:            []chatMessage{{Role: "user", Content: prompt}},
 		MaxCompletionTokens: 300,
 		ResponseFormat: &responseFormat{
 			Type: "json_schema",
@@ -96,5 +108,21 @@ func buildClassifyPrompt(code domain.FailureCode, data domain.ClassificationCont
 		fmt.Fprintf(&b, "Prior outcomes on this mandate: %v\n", data.PriorOutcomes)
 	}
 	b.WriteString("Give a confidence score between 0 and 1, and a one-sentence rationale.")
+	return b.String()
+}
+
+func buildAdvisePrompt(stat domain.FailureCodeStat) string {
+	var b strings.Builder
+	b.WriteString("A payment failure code has appeared across many mandate cycles and has no " +
+		"permanent classification rule yet. Based on the aggregate outcome below, propose " +
+		"whether it should become a permanent rule, classified as exactly one of: " +
+		"retry_now, retry_later, terminal, or manual_review. This proposal will be reviewed " +
+		"by a human before anything changes — you are not applying it.\n\n")
+	fmt.Fprintf(&b, "Failure code: %s\n", stat.Code)
+	fmt.Fprintf(&b, "Cycles affected: %d\n", stat.Occurrences)
+	fmt.Fprintf(&b, "Of those, eventually recovered: %d\n", stat.Recovered)
+	fmt.Fprintf(&b, "Of those, ended terminal (escalated or abandoned): %d\n", stat.Terminal)
+	b.WriteString("Give a confidence score between 0 and 1, and a one-sentence rationale " +
+		"referencing these numbers.")
 	return b.String()
 }

@@ -20,6 +20,13 @@ type Proposal struct {
 	Rationale  string
 }
 
+type FailureCodeStat struct {
+	Code        FailureCode `db:"code"`
+	Occurrences int64       `db:"occurrences"`
+	Recovered   int64       `db:"recovered"`
+	Terminal    int64       `db:"terminal"`
+}
+
 type DecisionReason struct {
 	FailureCode     FailureCode       `json:"failureCode"`
 	Class           FailureClass      `json:"class"`

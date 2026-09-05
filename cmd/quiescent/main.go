@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VIM4L-M/Quiescent/internal/classify"
 	"github.com/VIM4L-M/Quiescent/internal/domain"
 	"github.com/VIM4L-M/Quiescent/internal/execute"
 	"github.com/VIM4L-M/Quiescent/internal/intelligence"
@@ -256,7 +257,9 @@ func runIntelligence(ctx context.Context, log *slog.Logger) error {
 	narrator := intelligence.New(os.Getenv("GROQ_API_KEY"), envString("INTELLIGENCE_MODEL", "openai/gpt-oss-120b"))
 	interval := envDuration("INTELLIGENCE_INTERVAL", 10*time.Second)
 	batch := envInt("INTELLIGENCE_BATCH", 20)
+	minOccurrences := envInt64("INTELLIGENCE_MIN_OCCURRENCES", 5)
 	seen := map[domain.CycleID]bool{}
+	advised := map[domain.FailureCode]bool{}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -266,7 +269,36 @@ func runIntelligence(ctx context.Context, log *slog.Logger) error {
 			return ctx.Err()
 		case <-ticker.C:
 			narrateTick(ctx, s, narrator, batch, seen, log)
+			adviseTick(ctx, s, narrator, minOccurrences, batch, advised, log)
 		}
+	}
+}
+
+func adviseTick(ctx context.Context, s *store.Store, adv intelligence.Advisor, minOccurrences int64, limit int,
+	advised map[domain.FailureCode]bool, log *slog.Logger) {
+
+	stats, err := s.FailureCodeStats(ctx, minOccurrences, limit)
+	if err != nil {
+		log.Error("intelligence: failure code stats", "error", err)
+		return
+	}
+	for _, stat := range stats {
+		if advised[stat.Code] {
+			continue
+		}
+		if _, mapped := classify.Classify(stat.Code); mapped {
+			continue
+		}
+		proposal, err := adv.Advise(ctx, stat)
+		if err != nil {
+			log.Error("intelligence: advise", "failureCode", stat.Code, "error", err)
+			continue
+		}
+		advised[stat.Code] = true
+		log.Warn("intelligence: policy proposal — human review required, not applied",
+			"failureCode", stat.Code, "occurrences", stat.Occurrences,
+			"recovered", stat.Recovered, "terminal", stat.Terminal,
+			"proposedClass", proposal.Class, "confidence", proposal.Confidence, "rationale", proposal.Rationale)
 	}
 }
 
