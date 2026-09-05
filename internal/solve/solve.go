@@ -10,6 +10,8 @@ import (
 
 var offsets = [...]time.Duration{24 * time.Hour, 72 * time.Hour, 7 * 24 * time.Hour}
 
+const noticeLeadBuffer = 15 * time.Minute
+
 type Plan struct {
 	ScheduledFor time.Time
 	Reason       domain.DecisionReason
@@ -84,6 +86,30 @@ func Next(dueDate time.Time, attemptsUsed int16, code domain.FailureCode, class 
 	}, true
 }
 
+func AfterConfirmation(respondedAt time.Time, code domain.FailureCode, attemptsUsed int16) Plan {
+	candidate := respondedAt.Add(domain.NoticeLead + noticeLeadBuffer)
+	candidate, windowShift := shiftOutOfBlockedWindow(candidate)
+
+	return Plan{
+		ScheduledFor: candidate,
+		Reason: domain.DecisionReason{
+			FailureCode:     code,
+			Class:           domain.ClassRetryLater,
+			ClassifiedBy:    domain.ClassifiedByTable,
+			PredictedFunds:  "confirmed",
+			PredictionBasis: "customer confirmed balance is available, via a balance-check trigger",
+			Constraints: domain.ReasonConstraints{
+				BlockedWindowShift: windowShift,
+				NoticeDeadline:     candidate.Add(-domain.NoticeLead).Format(time.RFC3339),
+				NoticeLeadShift:    "none",
+				RailRules:          "trigger_confirmed",
+			},
+			BudgetBefore: attemptsUsed,
+			BudgetAfter:  attemptsUsed + 1,
+		},
+	}
+}
+
 func applyPreferredHour(t time.Time, preferredHour *int) (time.Time, string) {
 	if preferredHour == nil {
 		return t, ""
@@ -94,7 +120,7 @@ func applyPreferredHour(t time.Time, preferredHour *int) (time.Time, string) {
 }
 
 func ensureNoticeLead(candidate, now time.Time) (time.Time, string) {
-	earliest := now.Add(domain.NoticeLead)
+	earliest := now.Add(domain.NoticeLead + noticeLeadBuffer)
 	if !candidate.Before(earliest) {
 		return candidate, "none"
 	}

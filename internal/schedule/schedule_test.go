@@ -141,7 +141,7 @@ func TestScheduleRetryAttempt(t *testing.T) {
 		t.Fatalf("reload cycle: %v", err)
 	}
 
-	result, err := sched.ScheduleNext(ctx, c, domain.FailureInsufficientFunds)
+	result, err := sched.ScheduleNext(ctx, c, domain.FailurePreDebitNoticeMissing)
 	if err != nil {
 		t.Fatalf("schedule retry: %v", err)
 	}

@@ -975,3 +975,40 @@ hours of failure time, asserts the clamped result is always both ≥24h out
 and outside both blocked windows). Verified live afterward: the same
 cycle that used to spam forever now schedules its retry for a real time
 with room for a real notice, and the notice actually sends.
+
+---
+
+## 2026-09-05 · The confirmed-retry path cut the notice deadline exactly to zero
+
+**Believed:** a customer-confirmed retry, fired exactly 24 hours after they
+answered "yes," would satisfy the notice-lead rule the same way the fixed
+schedule already does — that rule was fixed this same day (see the entry
+above) and proven live minutes earlier.
+
+**Happened:** it didn't. Live: a balance-check trigger answered "yes,"
+the scheduler correctly reserved a retry for exactly `respondedAt + 24h`
+— and the outbox relay abandoned it seconds later anyway, before ever
+attempting to send the notice.
+
+**Why.** `respondedAt + 24h` makes the notice's own deadline
+(`scheduledFor − 24h`) equal to `respondedAt` itself — the exact instant
+scheduling happens. The relay is a poller: it needs real wall-clock time
+to notice the row and call `Send`. By the time it next ticks, `now` is
+already past a deadline that was set to "right now." This is the same
+root cause as the entry above — a computed time landing with zero real
+margin for delivery — recurring in a second code path that computes its
+own target time the same way (`X + NoticeLead`) instead of going through
+the shared floor. The earlier fix happened to carry a few extra minutes
+of accidental slack from a blocked-window shift; this path had no
+blocked-window shift to hide behind, so the same zero-margin math failed
+outright instead of by luck.
+
+**Changed:** added `solve.noticeLeadBuffer` (15 minutes) on top of the
+bare 24-hour requirement, in both `ensureNoticeLead` and the new
+`AfterConfirmation`. The rule itself is unchanged — still a real 24h
+notice, no exceptions — this only stops the target time from landing
+exactly on the deadline with no room for the relay to act.
+
+**Test:** verified live — the same balance-check-confirmed retry that was
+abandoned before the fix now has its notice delivered successfully and
+sits in a healthy `scheduled` state.

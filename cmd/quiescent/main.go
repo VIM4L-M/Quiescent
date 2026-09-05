@@ -35,6 +35,7 @@ func main() {
 		newSeedCmd(),
 		newCreateCmd(),
 		newCycleCmd(),
+		newRespondCmd(),
 		newPolicyCmd(),
 		newReportCmd(),
 		newVerifyCmd(),

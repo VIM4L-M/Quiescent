@@ -14,6 +14,8 @@ type CustomerID string
 
 type AttemptID string
 
+type TriggerID string
+
 type CorrelationID string
 
 type Fence int64
@@ -44,6 +46,10 @@ func NewCustomerID() CustomerID {
 
 func NewCorrelationID() CorrelationID {
 	return CorrelationID(newUUID())
+}
+
+func NewTriggerID() TriggerID {
+	return TriggerID(newUUID())
 }
 
 func NewIdempotencyKey(cycleID CycleID, seq int16) string {

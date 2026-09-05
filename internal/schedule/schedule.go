@@ -15,13 +15,15 @@ import (
 )
 
 const historyLimit = 20
+const triggerTimeout = 20 * time.Hour
 
 type Result string
 
 const (
-	ResultScheduled    Result = "scheduled"
-	ResultNotRetryable Result = "not_retryable"
-	ResultBudgetRaced  Result = "budget_raced"
+	ResultScheduled       Result = "scheduled"
+	ResultNotRetryable    Result = "not_retryable"
+	ResultBudgetRaced     Result = "budget_raced"
+	ResultAwaitingTrigger Result = "awaiting_trigger"
 )
 
 type Scheduler struct {
@@ -54,9 +56,19 @@ func (s *Scheduler) ScheduleNext(ctx context.Context, cycle domain.MandateCycle,
 
 	now := s.Now()
 	var plan solve.Plan
-	if cycle.AttemptsUsed == 0 {
+	switch {
+	case cycle.AttemptsUsed == 0:
 		plan = solve.First(cycle.DueDate, preferredHour, now)
-	} else {
+	case lastFailureCode == domain.FailureInsufficientFunds:
+		p, result, err := s.gateOnBalanceTrigger(ctx, cycle, cycle.AttemptsUsed+1, preferredHour, now)
+		if err != nil {
+			return "", err
+		}
+		if p == nil {
+			return result, nil
+		}
+		plan = *p
+	default:
 		class, _ := classify.Classify(lastFailureCode)
 		var ok bool
 		plan, ok = solve.Next(cycle.DueDate, cycle.AttemptsUsed, lastFailureCode, class, preferredHour, now)
@@ -99,6 +111,47 @@ func (s *Scheduler) ScheduleNext(ctx context.Context, cycle domain.MandateCycle,
 		"cycleID", cycle.CycleID, "attemptID", attempt.AttemptID, "seq", attempt.Seq, "scheduledFor", plan.ScheduledFor)
 	s.appendAudit(ctx, cycle, attempt, plan, hourBasis, lastFailureCode)
 	return ResultScheduled, nil
+}
+
+func (s *Scheduler) gateOnBalanceTrigger(ctx context.Context, cycle domain.MandateCycle, seq int16,
+	preferredHour *int, now time.Time) (*solve.Plan, Result, error) {
+
+	trig, err := s.Store.TriggerFor(ctx, cycle.CycleID, seq)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if trig == nil {
+		expiresAt := now.Add(triggerTimeout)
+		if err := s.Store.QueueTrigger(ctx, cycle.CycleID, seq, now, expiresAt); err != nil {
+			return nil, "", err
+		}
+		s.Log.Info("balance-check trigger sent",
+			"cycleID", cycle.CycleID, "seq", seq, "expiresAt", expiresAt)
+		return nil, ResultAwaitingTrigger, nil
+	}
+
+	if trig.SaidYes() {
+		plan := solve.AfterConfirmation(*trig.RespondedAt, domain.FailureInsufficientFunds, cycle.AttemptsUsed)
+		s.Log.Info("balance-check trigger confirmed — firing early",
+			"cycleID", cycle.CycleID, "seq", seq, "scheduledFor", plan.ScheduledFor)
+		return &plan, "", nil
+	}
+
+	if trig.Answered() || trig.Expired(now) {
+		// explicit "no", or the window ran out with no reply — fall back to
+		// exactly the same fixed retry the system would have scheduled with
+		// no trigger at all. We can never tell a genuine "no" apart from a
+		// wrong one, so the safe default is to try anyway either way.
+		class, _ := classify.Classify(domain.FailureInsufficientFunds)
+		plan, ok := solve.Next(cycle.DueDate, cycle.AttemptsUsed, domain.FailureInsufficientFunds, class, preferredHour, now)
+		if !ok {
+			return nil, ResultNotRetryable, nil
+		}
+		return &plan, "", nil
+	}
+
+	return nil, ResultAwaitingTrigger, nil
 }
 
 func (s *Scheduler) appendAudit(ctx context.Context, cycle domain.MandateCycle, attempt domain.Attempt,
