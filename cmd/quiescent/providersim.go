@@ -21,11 +21,15 @@ func newProviderSimCmd() *cobra.Command {
 
 func runProviderSim(ctx context.Context, log *slog.Logger) error {
 	cfg := provider.Config{
-		Seed:        envInt64("PROVIDER_SEED", 1),
-		Addr:        envString("PROVIDER_ADDR", ":8081"),
-		OracleAddr:  envString("PROVIDER_ORACLE_ADDR", ":8082"),
-		LedgerPath:  envString("PROVIDER_LEDGER_PATH", "ledger.jsonl"),
-		FixturePath: os.Getenv("PROVIDER_FIXTURE_PATH"),
+		Seed:                 envInt64("PROVIDER_SEED", 1),
+		Addr:                 envString("PROVIDER_ADDR", ":8081"),
+		OracleAddr:           envString("PROVIDER_ORACLE_ADDR", ":8082"),
+		LedgerPath:           envString("PROVIDER_LEDGER_PATH", "ledger.jsonl"),
+		FixturePath:          os.Getenv("PROVIDER_FIXTURE_PATH"),
+		IgnoreBlockedWindows: os.Getenv("PROVIDER_IGNORE_BLOCKED_WINDOWS") != "",
+	}
+	if cfg.IgnoreBlockedWindows {
+		log.Warn("PROVIDER_IGNORE_BLOCKED_WINDOWS is set — the blocked-window rule is NOT enforced by this bank simulator right now; unset it before recording anything for submission")
 	}
 	sim, err := provider.New(cfg, log)
 	if err != nil {

@@ -215,6 +215,26 @@ func TestBlockedWindowDeclines(t *testing.T) {
 	}
 }
 
+func TestIgnoreBlockedWindowsBypassesTheDeclineForTesting(t *testing.T) {
+	s, err := New(Config{Seed: 42, LedgerPath: filepath.Join(t.TempDir(), "ledger.jsonl"), IgnoreBlockedWindows: true},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(func() { srv.Close(); s.Close() })
+	c := NewClient(srv.URL, 2*time.Second)
+	s.Now = func() time.Time { return at(t, "2026-03-08T11:00:00+05:30") } // inside the 10:00-13:00 IST window
+
+	resp, err := debit(t, c, request(testCycle, 1, 1, 1_000))
+	if err != nil {
+		t.Fatalf("debit: %v", err)
+	}
+	if resp.Outcome == domain.OutcomeFailure && resp.FailureCode == FailureTechnicalDecline {
+		t.Fatal("IgnoreBlockedWindows must bypass the blocked-window decline")
+	}
+}
+
 func TestENACHBounceChargeOnInsufficientFunds(t *testing.T) {
 	s, srv := newSim(t, 42, filepath.Join(t.TempDir(), "ledger.jsonl"))
 	c := NewClient(srv.URL, 2*time.Second)

@@ -11,7 +11,7 @@ import (
 )
 
 func rootLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stdout, nil))
+	return slog.New(newColorLogHandler(os.Stdout))
 }
 
 func main() {

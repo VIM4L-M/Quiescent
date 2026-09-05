@@ -10,14 +10,19 @@ import (
 )
 
 type Conditions struct {
-	Seed           int64
-	CycleID        domain.CycleID
-	AttemptNumber  int
-	Rail           domain.Rail
-	AmountPaise    int64
-	BalancePaise   int64
-	FiredAt        time.Time
-	MandateRevoked bool
+	Seed                int64
+	CycleID             domain.CycleID
+	AttemptNumber       int
+	Rail                domain.Rail
+	AmountPaise         int64
+	BalancePaise        int64
+	FiredAt             time.Time
+	MandateRevoked      bool
+	IgnoreBlockedWindow bool
+}
+
+func (c Conditions) blocked() bool {
+	return !c.IgnoreBlockedWindow && Blocked(c.FiredAt)
 }
 
 type Decision struct {
@@ -48,7 +53,7 @@ func SuccessProbability(c Conditions) float64 {
 	if !ok {
 		return 0
 	}
-	if c.MandateRevoked || Blocked(c.FiredAt) {
+	if c.MandateRevoked || c.blocked() {
 		return 0
 	}
 	if c.AmountPaise <= 0 || c.AmountPaise > rules.CapPaise {
@@ -79,7 +84,7 @@ func Decide(c Conditions) Decision {
 	if c.MandateRevoked {
 		return Decision{Outcome: domain.OutcomeFailure, FailureCode: rules.Revoked}
 	}
-	if Blocked(c.FiredAt) {
+	if c.blocked() {
 		return Decision{Outcome: domain.OutcomeFailure, FailureCode: rules.WindowDecline}
 	}
 	if c.AmountPaise <= 0 || c.AmountPaise > rules.CapPaise {

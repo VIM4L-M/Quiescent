@@ -11,11 +11,12 @@ import (
 )
 
 type Config struct {
-	Seed        int64
-	Addr        string
-	OracleAddr  string
-	LedgerPath  string
-	FixturePath string
+	Seed                 int64
+	Addr                 string
+	OracleAddr           string
+	LedgerPath           string
+	FixturePath          string
+	IgnoreBlockedWindows bool
 }
 
 type Sim struct {
@@ -174,14 +175,15 @@ func (s *Sim) handleDebit(w http.ResponseWriter, r *http.Request) {
 
 	firedAt := s.Now()
 	decision := Decide(Conditions{
-		Seed:           s.cfg.Seed,
-		CycleID:        req.CycleID,
-		AttemptNumber:  attemptNumber,
-		Rail:           req.Rail,
-		AmountPaise:    req.AmountPaise,
-		BalancePaise:   s.world.BalanceAt(req.CycleID, firedAt),
-		FiredAt:        firedAt,
-		MandateRevoked: s.ledger.Revoked(req.CycleID),
+		Seed:                s.cfg.Seed,
+		CycleID:             req.CycleID,
+		AttemptNumber:       attemptNumber,
+		Rail:                req.Rail,
+		AmountPaise:         req.AmountPaise,
+		BalancePaise:        s.world.BalanceAt(req.CycleID, firedAt),
+		FiredAt:             firedAt,
+		MandateRevoked:      s.ledger.Revoked(req.CycleID),
+		IgnoreBlockedWindow: s.cfg.IgnoreBlockedWindows,
 	})
 
 	entry := Entry{

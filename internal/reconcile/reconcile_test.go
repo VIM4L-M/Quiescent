@@ -18,7 +18,26 @@ import (
 	"github.com/VIM4L-M/Quiescent/internal/provider"
 	"github.com/VIM4L-M/Quiescent/internal/reconcile"
 	"github.com/VIM4L-M/Quiescent/internal/store"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// forceLeaseExpired backdates a lease directly, rather than sleeping past a
+// short TTL — expires_at is transaction_timestamp-relative in Postgres, and
+// a race against a fixed sleep is exactly the kind of flake this project's
+// own working agreements warn against.
+func forceLeaseExpired(t *testing.T, cycleID domain.CycleID) {
+	t.Helper()
+	ctx := context.Background()
+	raw, err := pgxpool.New(ctx, os.Getenv("DB_URL"))
+	if err != nil {
+		t.Fatalf("raw pool: %v", err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(ctx,
+		`UPDATE leases SET expires_at = now() - interval '1 minute' WHERE cycle_id = $1`, cycleID); err != nil {
+		t.Fatalf("force lease expired: %v", err)
+	}
+}
 
 func newUUID(t *testing.T) string {
 	t.Helper()
@@ -43,6 +62,15 @@ func testStore(t *testing.T) (*store.Store, context.Context) {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(s.Close)
+
+	raw, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("raw pool: %v", err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(ctx, `TRUNCATE audit_log, outbox, attempts, leases, mandate_cycles RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
 	return s, ctx
 }
 
@@ -156,7 +184,7 @@ func fireAndTimeout(t *testing.T, s *store.Store, bank *provider.Client, c domai
 	if err := s.RecordAttemptOutcome(ctx, a.AttemptID, domain.OutcomeTimeout, nil); err != nil {
 		t.Fatalf("record timeout: %v", err)
 	}
-	time.Sleep(300 * time.Millisecond)
+	forceLeaseExpired(t, c.CycleID)
 }
 
 // fireAndCrash is fireAndTimeout without the final RecordAttemptOutcome call —
@@ -181,7 +209,7 @@ func fireAndCrash(t *testing.T, s *store.Store, bank *provider.Client, c domain.
 		AmountPaise:    c.AmountPaise,
 		Rail:           c.Rail,
 	})
-	time.Sleep(300 * time.Millisecond)
+	forceLeaseExpired(t, c.CycleID)
 }
 
 func TestResolveRecoversWhenDebited(t *testing.T) {
