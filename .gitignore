@@ -1,4 +1,8 @@
 *.md
+!README.md
+!docs/ARCHITECTURE.md
+!docs/FAILURES.md
+!docs/JOURNAL.md
 !.gitignore
 
 bin/
