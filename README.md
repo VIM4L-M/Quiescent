@@ -124,6 +124,27 @@ double-debits a customer.
 
 ---
 
+## Patterns implemented
+
+Named precisely, because vague description is how a correctness claim stops
+being checkable. Each of these is a well-established technique from
+distributed-systems and payments engineering, not invented here, applied
+correctly here:
+
+| Pattern | Where | What it closes |
+|---|---|---|
+| **Fencing tokens** | Lease acquisition (`lease.Acquire`) | A stalled worker's stale request is rejected *at the receiver*, not trusted at the lock — the fix Martin Kleppmann's critique of naive distributed locking calls for |
+| **Transactional outbox** | Pre-debit notice (`store.ReserveAttempt`) | The notice is written in the *same* transaction as the budget reservation, then delivered separately by a polling relay — no dual-write inconsistency between "charged" and "warned," the same category of technique real payments infrastructure uses for reliable messaging |
+| **Write-ahead attempt record** | `execute.FireOne`, before the debit is sent | A crash mid-flight always leaves a recoverable row — the log records what was *known*, not what happened |
+| **Idempotent receiver** | `provider-sim`'s debit endpoint | A deterministic idempotency key, computed once in Go, lets a retried request after a network error return the original outcome instead of double-processing |
+| **Optimistic concurrency control** | `store.ReserveAttempt`'s budget update | A single guarded compare-and-set against a version column, never read-then-write, so two schedulers racing for the same budget slot can't both win |
+| **Circuit breaker + bounded concurrency** | Every `intelligence` call | A 2-second timeout, a breaker, a cap of 2 in-flight requests, and a defined fallback — an AI that's slow can never stall a debit |
+| **Common random numbers** | `harness`'s policy comparison | Every compared policy sees the identical underlying draw, so a difference in outcome is attributable to the decision, not luck |
+
+Full reasoning for each: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+---
+
 ## Correctness
 
 Six invariants, checked after every run against the live database. Each is
@@ -150,9 +171,10 @@ $ quiescent verify
 ```
 
 The full failure taxonomy this project is built against — 29 named failure
-modes across five categories, crash points through policy violations to
-recovery-harm — lives in [`docs/FAILURES.md`](docs/FAILURES.md). Which of
-those were actually witnessed live, and how each was found and fixed, is in
+modes across five categories (known declines, ambiguous outcomes, execution
+failures, policy violations, and recovery harm) — lives in
+[`docs/FAILURES.md`](docs/FAILURES.md). Which of those were actually
+witnessed live, and how each was found and fixed, is in
 [`docs/JOURNAL.md`](docs/JOURNAL.md).
 
 ---
@@ -178,6 +200,34 @@ ever "we couldn't proceed because the AI was slow," the design is wrong.
 
 ---
 
+## Advisory retry confirmation
+
+One more lever on top of the fixed schedule, and off by default for
+anything that isn't a funds-related failure: before spending a retry on a
+cycle that failed specifically for insufficient funds, the scheduler can
+send the customer a "do you have balance now?" prompt instead of firing
+blind.
+
+- **Confirmed yes** → notify immediately, fire ~24h later — still bound by
+  the same blocked-window avoidance and notice-lead flooring as every other
+  attempt, never an exception to either rule.
+- **No, or no response within the window** → falls back to firing on the
+  exact normal schedule anyway. Nothing is ever skipped or escalated early
+  because of an answer — a genuine "no" and a wrong one are structurally
+  indistinguishable, so the safe default is to try regardless, exactly as
+  the system always has.
+- **Every real attempt still exhausted, still unrecovered** → escalates to
+  a human exactly as before. The 4-attempt regulatory cap is never
+  extended by this feature — a human's next step is a manual, out-of-mandate
+  channel, not a 5th automated debit.
+
+The same discipline as the AI advisor above: a signal that can help,
+never one that's trusted blindly or allowed to make the final call.
+`quiescent respond <cycleID> yes|no` stands in for the customer for
+testing and demos, in place of a real notification channel.
+
+---
+
 ## Measured
 
 Reported against two comparators, not a raw recovery rate: a naive fixed
@@ -195,13 +245,15 @@ captured lift     ≈ -0.02 pp (95% CI)
 ```
 
 Stated plainly: **this system does not currently beat the naive baseline.**
-That's a real, measured result, not a bug — `solve` fixes the retry *day* to
-the conservative regulatory reading (constraint box, `CLAUDE.md`), which
-makes its days identical to the baseline's by construction. The oracle's
-2.37 percentage points of proven achievable lift are only reachable by
-choosing a *different* day, which the current conservative stance
-deliberately forbids. Closing that gap is the clearest next lever, and it's
-an open, honestly-labeled question — not a hidden one.
+That's a real, measured result, not a bug. Whether the regulator *mandates*
+the fixed T+24h/72h/7d retry spacing or merely recommends it isn't something
+either of us could independently confirm in the time available — so `solve`
+assumes the conservative reading (mandated, not a suggestion), which makes
+its days identical to the baseline's by construction. The oracle's 2.37
+percentage points of proven achievable lift are only reachable by choosing
+a *different* day, which that conservative stance deliberately forbids.
+Closing that gap is the clearest next lever, and it's an open,
+honestly-labeled question, not a hidden one.
 
 ---
 
@@ -224,6 +276,9 @@ $env:DB_URL = "postgres://quiescent:quiescent@localhost:5433/quiescent?sslmode=d
 # back in your first terminal — create something to watch happen:
 .\quiescent.exe create --rail upi_autopay --amount 50000 --fire-in 30s
 .\quiescent.exe cycle <the-cycle-id-just-printed>
+
+# if it declines for insufficient funds, answer its balance-check trigger:
+.\quiescent.exe respond <the-cycle-id> yes
 
 # batch measurement, no live processes needed:
 .\quiescent.exe seed --customers 50
