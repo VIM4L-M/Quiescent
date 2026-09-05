@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -23,11 +24,12 @@ import (
 	"github.com/VIM4L-M/Quiescent/internal/reconcile"
 	"github.com/VIM4L-M/Quiescent/internal/schedule"
 	"github.com/VIM4L-M/Quiescent/internal/store"
+	"github.com/VIM4L-M/Quiescent/internal/verify"
 	"golang.org/x/time/rate"
 )
 
 func main() {
-	role := flag.String("role", "", "scheduler | worker | intelligence | provider-sim")
+	role := flag.String("role", "", "scheduler | worker | intelligence | provider-sim | verify")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -44,13 +46,47 @@ func main() {
 		err = runIntelligence(ctx, log)
 	case "provider-sim":
 		err = runProviderSim(ctx, log)
+	case "verify":
+		err = runVerify(ctx, log)
 	default:
-		err = fmt.Errorf("unknown --role %q; want scheduler, worker, intelligence, or provider-sim", *role)
+		err = fmt.Errorf("unknown --role %q; want scheduler, worker, intelligence, provider-sim, or verify", *role)
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("exited with error", "role", *role, "error", err)
 		os.Exit(1)
 	}
+}
+
+func runVerify(ctx context.Context, _ *slog.Logger) error {
+	dbURL := envString("DB_URL", "")
+	s, err := store.Open(ctx, dbURL)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	fmt.Printf("Running 6 invariants against %s...\n\n", dbURL)
+	results, err := verify.Run(ctx, s)
+	if err != nil {
+		return err
+	}
+
+	failed := 0
+	for _, r := range results {
+		if r.Passed() {
+			fmt.Printf("  [PASS] %d. %s\n", r.Number, r.Name)
+			continue
+		}
+		failed++
+		fmt.Printf("  [FAIL] %d. %s (%d row(s): %s)\n", r.Number, r.Name, len(r.Violations), strings.Join(r.Violations, ", "))
+	}
+	fmt.Printf("\n%d/%d passed", len(results)-failed, len(results))
+	if failed > 0 {
+		fmt.Printf(", %d failed\n", failed)
+		return fmt.Errorf("%d invariant(s) failed", failed)
+	}
+	fmt.Println()
+	return nil
 }
 
 func runProviderSim(ctx context.Context, log *slog.Logger) error {
